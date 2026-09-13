@@ -1131,9 +1131,11 @@ actor GitWorkspaceStateAuthority {
             }
             expectedWatermarks[fence.repositoryKey] = fence.acceptedMetadataWatermark
         }
-        return synchronousState.withCurrentFences(fences) {
-            metadataMonitor.withCurrentAcceptedWatermarks(expectedWatermarks, body)
-        }
+        guard let permitResult = metadataMonitor.withCurrentAcceptedWatermarks(
+            expectedWatermarks,
+            { synchronousState.withCurrentFences(fences, body) }
+        ) else { return nil }
+        return permitResult
     }
 
     func releasePendingInitializationAuthorityFence(
