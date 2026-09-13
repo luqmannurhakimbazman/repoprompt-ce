@@ -180,12 +180,28 @@ enum MCPRequestProgressContext {
     case direct(MCPRequestProgressState)
 }
 
+/// The server-error payload delivered to each outstanding JSON-RPC request before an
+/// accepted connection is closed for an unresponsive tool execution.
+///
+/// This is deliberately transport-level context. The handler which exceeded its
+/// deadline cannot be trusted to return a result, while other accepted requests on
+/// the same connection may not yet have reached a handler at all.
+struct MCPExecutionWatchdogTerminalContext {
+    let reason: String
+    let toolName: String
+    let handlerPhase: String
+    let invocationID: UUID
+
+    static let jsonRPCServerErrorCode = -32000
+    static let message = "MCP connection closed after unresponsive tool execution"
+}
+
 protocol MCPServerConnection: MCPDomainProgressTransport {
     func start(approvalHandler: @escaping (MCP.Client.Info) async -> Bool) async throws
     func stop() async
-    /// Immediately severs transport delivery for a tool execution that ignored cancellation.
-    /// This must not await handler/server shutdown.
-    func abortForExecutionWatchdog() async
+    /// Sends terminal JSON-RPC errors for outstanding requests, then severs delivery for
+    /// a tool execution that ignored cancellation. This must not await handler/server shutdown.
+    func abortForExecutionWatchdog(context: MCPExecutionWatchdogTerminalContext) async
     func notifyToolListChanged() async
     func connectionState() -> ConnectionStateSnapshot
     func isViableForRetention() -> Bool
@@ -7109,7 +7125,12 @@ actor ServerNetworkManager {
             #endif
         }
         guard let connection else { return }
-        await connection.abortForExecutionWatchdog()
+        await connection.abortForExecutionWatchdog(context: MCPExecutionWatchdogTerminalContext(
+            reason: closeContext.reason,
+            toolName: toolName,
+            handlerPhase: handlerPhase?.phase.rawValue ?? "unreported",
+            invocationID: invocationID
+        ))
         Task { [weak self] in
             await self?.removeConnection(id, context: closeContext)
         }
