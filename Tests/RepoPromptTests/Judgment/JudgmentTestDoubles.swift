@@ -25,10 +25,7 @@ final class StubHTTPClient: HTTPClient, @unchecked Sendable {
     }
 
     func data(for request: URLRequest) async throws -> HTTPResponse {
-        lock.lock()
-        recordedRequests.append(request)
-        let outcome = queued.isEmpty ? Outcome.failure(URLError(.badServerResponse)) : queued.removeFirst()
-        lock.unlock()
+        let outcome = nextOutcome(recording: request)
 
         switch outcome {
         case let .status(code, body):
@@ -44,6 +41,13 @@ final class StubHTTPClient: HTTPClient, @unchecked Sendable {
     func bytes(for request: URLRequest) async throws -> (bytes: URLSession.AsyncBytes, http: HTTPURLResponse) {
         _ = request
         throw URLError(.unsupportedURL)
+    }
+
+    private func nextOutcome(recording request: URLRequest) -> Outcome {
+        lock.lock()
+        defer { lock.unlock() }
+        recordedRequests.append(request)
+        return queued.isEmpty ? Outcome.failure(URLError(.badServerResponse)) : queued.removeFirst()
     }
 
     private static func response(code: Int, url: URL?) -> HTTPURLResponse {
