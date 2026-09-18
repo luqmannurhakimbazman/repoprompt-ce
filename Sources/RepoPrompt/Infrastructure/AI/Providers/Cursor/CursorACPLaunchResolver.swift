@@ -72,6 +72,20 @@ enum CursorACPLaunchResolutionError: Error, Equatable, LocalizedError {
 }
 
 final class CursorACPLaunchResolver: @unchecked Sendable {
+    enum ProbeDiagnosticSource: String {
+        case agentRun = "agent_run"
+        case modelPolling = "model_polling"
+        case headless
+        case test
+    }
+
+    private struct ProbeDiagnosticSnapshot {
+        let source: ProbeDiagnosticSource
+        let preflightID: UUID?
+        let attemptID: UUID?
+        let candidate: String
+    }
+
     typealias EnvironmentProvider = @Sendable (_ enableDebugLogging: Bool) async -> ACPLaunchEnvironment
     typealias SupplementalPathProvider = @Sendable (_ configuredPaths: [String]) -> [String]
     typealias ProbeRunner = @Sendable (
@@ -109,15 +123,39 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
 
         private let lock = NSLock()
         private let onSettled: @Sendable (ProbeAttempt) -> Void
+        private let diagnosticSource: ProbeDiagnosticSource
+        private let diagnosticPreflightID: UUID?
+        private let diagnosticAttemptID: UUID?
+        private let diagnosticCandidate: String
         private var state: State = .active
+        private var logicalRetiredAtMS: Double?
         private var producerTask: Task<ProbeProducerOutcome, Never>?
         private var deadlineTask: Task<Void, Never>?
         private var producerOutcome: ProbeProducerOutcome?
         private var logicalOutcome: ProbeLogicalOutcome?
         private var logicalContinuation: CheckedContinuation<ProbeLogicalOutcome, Never>?
 
-        init(onSettled: @escaping @Sendable (ProbeAttempt) -> Void) {
+        init(
+            diagnosticSource: ProbeDiagnosticSource,
+            diagnosticPreflightID: UUID?,
+            diagnosticAttemptID: UUID?,
+            diagnosticCandidate: String,
+            onSettled: @escaping @Sendable (ProbeAttempt) -> Void
+        ) {
+            self.diagnosticSource = diagnosticSource
+            self.diagnosticPreflightID = diagnosticPreflightID
+            self.diagnosticAttemptID = diagnosticAttemptID
+            self.diagnosticCandidate = diagnosticCandidate
             self.onSettled = onSettled
+        }
+
+        var diagnosticSnapshot: ProbeDiagnosticSnapshot {
+            ProbeDiagnosticSnapshot(
+                source: diagnosticSource,
+                preflightID: diagnosticPreflightID,
+                attemptID: diagnosticAttemptID,
+                candidate: diagnosticCandidate
+            )
         }
 
         var isSettled: Bool {
@@ -180,12 +218,23 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
             var continuation: CheckedContinuation<ProbeLogicalOutcome, Never>?
             var shouldNotifySettled = false
             var deadlineTaskToCancel: Task<Void, Never>?
+            var previousState = "settled"
+            var cleanupDurationMS: Double?
             lock.lock()
             guard producerOutcome == nil else {
                 lock.unlock()
                 return
             }
+            let settledAtMS = CursorACPLaunchResolver.diagnosticTimestampMS()
             producerOutcome = outcome
+            switch state {
+            case .active: previousState = "active"
+            case .draining: previousState = "draining"
+            case .settled: previousState = "settled"
+            }
+            if let settledAtMS, let logicalRetiredAtMS, previousState == "draining" {
+                cleanupDurationMS = max(0, settledAtMS - logicalRetiredAtMS)
+            }
             if state != .settled {
                 state = .settled
                 shouldNotifySettled = true
@@ -201,6 +250,27 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
             deadlineTask = nil
             lock.unlock()
 
+            if shouldNotifySettled {
+                let producerOutcome = switch outcome {
+                case .success: "returned"
+                case .failure: "failed"
+                case .cancelled: "cancelled"
+                }
+                var fields = [
+                    "state": "settled",
+                    "previous_state": previousState,
+                    "outcome": producerOutcome
+                ]
+                if let cleanupDurationMS {
+                    fields["cleanup_duration_ms"] = String(format: "%.3f", cleanupDurationMS)
+                }
+                CursorACPLaunchResolver.recordProbeDiagnostic(
+                    "producer_settled",
+                    snapshot: diagnosticSnapshot,
+                    fields: fields,
+                    timestampMS: settledAtMS
+                )
+            }
             deadlineTaskToCancel?.cancel()
             if shouldNotifySettled {
                 onSettled(self)
@@ -218,15 +288,29 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
             var continuation: CheckedContinuation<ProbeLogicalOutcome, Never>?
             var producerTaskToCancel: Task<ProbeProducerOutcome, Never>?
             var deadlineTaskToCancel: Task<Void, Never>?
+            var diagnosticEvent: String?
+            var diagnosticState = "settled"
             lock.lock()
             guard logicalOutcome == nil else {
                 lock.unlock()
                 return
             }
+            let retiredAtMS = CursorACPLaunchResolver.diagnosticTimestampMS()
             logicalOutcome = outcome
+            logicalRetiredAtMS = retiredAtMS
             if state == .active {
                 state = .draining
                 producerTaskToCancel = producerTask
+            }
+            switch state {
+            case .active: diagnosticState = "active"
+            case .draining: diagnosticState = "draining"
+            case .settled: diagnosticState = "settled"
+            }
+            switch outcome {
+            case .deadline: diagnosticEvent = "logical_timeout"
+            case .cancelled: diagnosticEvent = "logical_cancelled"
+            case .producer: diagnosticEvent = nil
             }
             deadlineTaskToCancel = deadlineTask
             deadlineTask = nil
@@ -234,6 +318,14 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
             logicalContinuation = nil
             lock.unlock()
 
+            if let diagnosticEvent {
+                CursorACPLaunchResolver.recordProbeDiagnostic(
+                    diagnosticEvent,
+                    snapshot: diagnosticSnapshot,
+                    fields: ["state": diagnosticState],
+                    timestampMS: retiredAtMS
+                )
+            }
             producerTaskToCancel?.cancel()
             deadlineTaskToCancel?.cancel()
             continuation?.resume(returning: outcome)
@@ -260,21 +352,52 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
             private var settlementWaiters: [(ProbeAttempt, CheckedContinuation<Void, Never>)] = []
         #endif
 
-        func beginProbeAttempt() -> ProbeAttempt? {
+        func beginProbeAttempt(
+            diagnosticSource: ProbeDiagnosticSource,
+            diagnosticPreflightID: UUID?,
+            diagnosticAttemptID: UUID?,
+            diagnosticCandidate: String
+        ) -> ProbeAttempt? {
+            var releasedExistingSnapshot: ProbeDiagnosticSnapshot?
+            var releasedExistingAtMS: Double?
+            var attemptStartedAtMS: Double?
             lock.lock()
             if let existing = ownedProbeAttempt {
                 guard existing.isSettled else {
                     lock.unlock()
                     return nil
                 }
+                releasedExistingSnapshot = existing.diagnosticSnapshot
+                releasedExistingAtMS = CursorACPLaunchResolver.diagnosticTimestampMS()
                 ownedProbeAttempt = nil
             }
 
-            let attempt = ProbeAttempt(onSettled: { [weak self] attempt in
-                self?.probeAttemptDidSettle(attempt)
-            })
+            let attempt = ProbeAttempt(
+                diagnosticSource: diagnosticSource,
+                diagnosticPreflightID: diagnosticPreflightID,
+                diagnosticAttemptID: diagnosticAttemptID,
+                diagnosticCandidate: diagnosticCandidate,
+                onSettled: { [weak self] attempt in
+                    self?.probeAttemptDidSettle(attempt)
+                }
+            )
+            attemptStartedAtMS = CursorACPLaunchResolver.diagnosticTimestampMS()
             ownedProbeAttempt = attempt
             lock.unlock()
+            if let releasedExistingSnapshot {
+                CursorACPLaunchResolver.recordProbeDiagnostic(
+                    "ownership_released",
+                    snapshot: releasedExistingSnapshot,
+                    fields: ["reason": "settled_before_replacement"],
+                    timestampMS: releasedExistingAtMS
+                )
+            }
+            CursorACPLaunchResolver.recordProbeDiagnostic(
+                "attempt_started",
+                snapshot: attempt.diagnosticSnapshot,
+                fields: ["state": "active"],
+                timestampMS: attemptStartedAtMS
+            )
             return attempt
         }
 
@@ -290,11 +413,24 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
             return true
         }
 
+        func pendingProbeDiagnosticSnapshot() -> ProbeDiagnosticSnapshot? {
+            lock.lock()
+            let attempt = ownedProbeAttempt
+            lock.unlock()
+            guard let attempt, !attempt.isSettled else { return nil }
+            return attempt.diagnosticSnapshot
+        }
+
         private func probeAttemptDidSettle(_ attempt: ProbeAttempt) {
+            let snapshot = attempt.diagnosticSnapshot
+            var didReleaseOwnership = false
+            var releasedAtMS: Double?
             var readyWaiters: [CheckedContinuation<Void, Never>] = []
             lock.lock()
             if ownedProbeAttempt === attempt {
+                releasedAtMS = CursorACPLaunchResolver.diagnosticTimestampMS()
                 ownedProbeAttempt = nil
+                didReleaseOwnership = true
             }
             #if DEBUG
                 var remainingWaiters: [(ProbeAttempt, CheckedContinuation<Void, Never>)] = []
@@ -308,6 +444,14 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
                 settlementWaiters = remainingWaiters
             #endif
             lock.unlock()
+            if didReleaseOwnership {
+                CursorACPLaunchResolver.recordProbeDiagnostic(
+                    "ownership_released",
+                    snapshot: snapshot,
+                    fields: ["reason": "producer_settled"],
+                    timestampMS: releasedAtMS
+                )
+            }
             readyWaiters.forEach { $0.resume() }
         }
 
@@ -333,8 +477,12 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
     private let nowProvider: NowProvider
     private let deadlineWaiter: DeadlineWaiter
     private let aggregateProbeTimeout: TimeInterval
+    private let diagnosticSource: ProbeDiagnosticSource
     private let lock = NSLock()
     private var cachedLaunchByKey: [String: CursorACPResolvedLaunch] = [:]
+    #if DEBUG
+        private var beforeProbeProducerSettlementForTesting: (@Sendable () async -> Void)?
+    #endif
     private let probeOwnership: ProbeOwnership
     /// Provider factories may create a fresh resolver for each discovery; only physical probe
     /// ownership is shared across those default instances. Launch caches stay resolver-local.
@@ -347,6 +495,7 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         nowProvider: @escaping NowProvider,
         deadlineWaiter: @escaping DeadlineWaiter,
         aggregateProbeTimeout: TimeInterval,
+        diagnosticSource: ProbeDiagnosticSource,
         probeOwnership: ProbeOwnership
     ) {
         environmentProvider = launchEnvironmentProvider
@@ -355,10 +504,11 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         self.nowProvider = nowProvider
         self.deadlineWaiter = deadlineWaiter
         self.aggregateProbeTimeout = aggregateProbeTimeout
+        self.diagnosticSource = diagnosticSource
         self.probeOwnership = probeOwnership
     }
 
-    convenience init() {
+    convenience init(source: ProbeDiagnosticSource = .agentRun) {
         self.init(
             launchEnvironmentProvider: { enableDebugLogging in
                 let result = await ProcessEnvironmentBuilder.build(
@@ -386,6 +536,7 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
             nowProvider: { ProcessInfo.processInfo.systemUptime },
             deadlineWaiter: CursorACPLaunchResolver.defaultDeadlineWaiter,
             aggregateProbeTimeout: 10,
+            diagnosticSource: source,
             probeOwnership: Self.sharedDefaultProbeOwnership
         )
     }
@@ -405,7 +556,8 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         },
         nowProvider: @escaping NowProvider = { ProcessInfo.processInfo.systemUptime },
         deadlineWaiter: @escaping DeadlineWaiter = CursorACPLaunchResolver.defaultDeadlineWaiter,
-        aggregateProbeTimeout: TimeInterval = 10
+        aggregateProbeTimeout: TimeInterval = 10,
+        source: ProbeDiagnosticSource = .test
     ) {
         self.init(
             launchEnvironmentProvider: { enableDebugLogging in
@@ -416,6 +568,7 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
             nowProvider: nowProvider,
             deadlineWaiter: deadlineWaiter,
             aggregateProbeTimeout: aggregateProbeTimeout,
+            diagnosticSource: source,
             probeOwnership: ProbeOwnership()
         )
     }
@@ -435,7 +588,8 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         },
         nowProvider: @escaping NowProvider = { ProcessInfo.processInfo.systemUptime },
         deadlineWaiter: @escaping DeadlineWaiter = CursorACPLaunchResolver.defaultDeadlineWaiter,
-        aggregateProbeTimeout: TimeInterval = 10
+        aggregateProbeTimeout: TimeInterval = 10,
+        source: ProbeDiagnosticSource = .test
     ) {
         self.init(
             launchEnvironmentProvider: launchEnvironmentProvider,
@@ -444,6 +598,7 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
             nowProvider: nowProvider,
             deadlineWaiter: deadlineWaiter,
             aggregateProbeTimeout: aggregateProbeTimeout,
+            diagnosticSource: source,
             probeOwnership: ProbeOwnership()
         )
     }
@@ -452,10 +607,18 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         convenience init(
             environmentProvider: @escaping @Sendable (_ enableDebugLogging: Bool) async -> [String: String],
             supplementalPathProvider: @escaping SupplementalPathProvider,
-            probeRunner: @escaping ProbeRunner,
-            nowProvider: @escaping NowProvider,
-            deadlineWaiter: @escaping DeadlineWaiter,
+            probeRunner: @escaping ProbeRunner = { launch, config, timeout, timeoutCleanupPolicy in
+                try await CursorACPLaunchResolver.runProbe(
+                    launch: launch,
+                    config: config,
+                    timeout: timeout,
+                    timeoutCleanupPolicy: timeoutCleanupPolicy
+                )
+            },
+            nowProvider: @escaping NowProvider = { ProcessInfo.processInfo.systemUptime },
+            deadlineWaiter: @escaping DeadlineWaiter = CursorACPLaunchResolver.defaultDeadlineWaiter,
             aggregateProbeTimeout: TimeInterval = 10,
+            source: ProbeDiagnosticSource = .test,
             sharingProbeOwnershipWith resolver: CursorACPLaunchResolver
         ) {
             self.init(
@@ -467,8 +630,99 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
                 nowProvider: nowProvider,
                 deadlineWaiter: deadlineWaiter,
                 aggregateProbeTimeout: aggregateProbeTimeout,
+                diagnosticSource: source,
                 probeOwnership: resolver.probeOwnership
             )
+        }
+    #endif
+
+    private static func makeDiagnosticID() -> UUID? {
+        #if DEBUG
+            guard AgentModePerfDiagnostics.isEnabled else { return nil }
+            return UUID()
+        #else
+            return nil
+        #endif
+    }
+
+    private static func diagnosticTimestampMS() -> Double? {
+        #if DEBUG
+            ProcessInfo.processInfo.systemUptime * 1000
+        #else
+            nil
+        #endif
+    }
+
+    private static func recordProbeDiagnostic(
+        _ event: String,
+        snapshot: ProbeDiagnosticSnapshot,
+        fields: [String: String] = [:],
+        timestampMS: Double? = nil
+    ) {
+        #if DEBUG
+            guard AgentModePerfDiagnostics.isEnabled else { return }
+            var eventFields = fields
+            eventFields["source"] = snapshot.source.rawValue
+            eventFields["preflight_id"] = AgentModePerfDiagnostics.shortID(snapshot.preflightID)
+            if let attemptID = snapshot.attemptID {
+                eventFields["attempt_id"] = AgentModePerfDiagnostics.shortID(attemptID)
+            }
+            if !snapshot.candidate.isEmpty {
+                eventFields["candidate"] = snapshot.candidate
+            }
+            if let timestampMS = timestampMS ?? diagnosticTimestampMS() {
+                eventFields["uptime_ms"] = String(format: "%.3f", timestampMS)
+            }
+            AgentModePerfDiagnostics.event("provider.cursor.preflight.\(event)", fields: eventFields)
+        #endif
+    }
+
+    private static func recordProbeDiagnostic(
+        _ event: String,
+        source: ProbeDiagnosticSource,
+        preflightID: UUID?,
+        fields: [String: String] = [:]
+    ) {
+        recordProbeDiagnostic(
+            event,
+            snapshot: ProbeDiagnosticSnapshot(
+                source: source,
+                preflightID: preflightID,
+                attemptID: nil,
+                candidate: ""
+            ),
+            fields: fields
+        )
+    }
+
+    private func recordCleanupPendingDiagnostic(stage: String, preflightID: UUID?) {
+        #if DEBUG
+            guard AgentModePerfDiagnostics.isEnabled else { return }
+            var fields = ["stage": stage]
+            if let blocker = probeOwnership.pendingProbeDiagnosticSnapshot() {
+                fields["blocking_source"] = blocker.source.rawValue
+                fields["blocking_attempt_id"] = AgentModePerfDiagnostics.shortID(blocker.attemptID)
+            }
+            Self.recordProbeDiagnostic(
+                "cleanup_pending_rejected",
+                source: diagnosticSource,
+                preflightID: preflightID,
+                fields: fields
+            )
+        #endif
+    }
+
+    #if DEBUG
+        func setBeforeProbeProducerSettlementForTesting(_ hook: (@Sendable () async -> Void)?) {
+            lock.lock()
+            beforeProbeProducerSettlementForTesting = hook
+            lock.unlock()
+        }
+
+        private func beforeProbeProducerSettlementHookForTesting() -> (@Sendable () async -> Void)? {
+            lock.lock()
+            defer { lock.unlock() }
+            return beforeProbeProducerSettlementForTesting
         }
     #endif
 
@@ -500,17 +754,63 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
     }
 
     func probeSupport(for config: CursorAgentConfig) async throws -> ACPSupportResult {
-        try await probeOwnership.probeMutex.withLock { [self] in
-            try await probeSupportSerially(for: config)
+        let preflightID = Self.makeDiagnosticID()
+        let waitStartedAtMS = Self.diagnosticTimestampMS()
+        Self.recordProbeDiagnostic(
+            "wait_started",
+            source: diagnosticSource,
+            preflightID: preflightID
+        )
+        do {
+            let result = try await probeOwnership.probeMutex.withLock { [self] in
+                var fields: [String: String] = [:]
+                if let waitStartedAtMS, let acquiredAtMS = Self.diagnosticTimestampMS() {
+                    fields["wait_duration_ms"] = String(format: "%.3f", max(0, acquiredAtMS - waitStartedAtMS))
+                }
+                Self.recordProbeDiagnostic(
+                    "lock_acquired",
+                    source: diagnosticSource,
+                    preflightID: preflightID,
+                    fields: fields
+                )
+                return try await probeSupportSerially(for: config, diagnosticPreflightID: preflightID)
+            }
+            Self.recordProbeDiagnostic(
+                "finished",
+                source: diagnosticSource,
+                preflightID: preflightID,
+                fields: ["outcome": result == .supported ? "supported" : "unsupported"]
+            )
+            return result
+        } catch is CancellationError {
+            Self.recordProbeDiagnostic(
+                "finished",
+                source: diagnosticSource,
+                preflightID: preflightID,
+                fields: ["outcome": "cancelled"]
+            )
+            throw CancellationError()
+        } catch {
+            Self.recordProbeDiagnostic(
+                "finished",
+                source: diagnosticSource,
+                preflightID: preflightID,
+                fields: ["outcome": "failed"]
+            )
+            throw error
         }
     }
 
-    private func probeSupportSerially(for config: CursorAgentConfig) async throws -> ACPSupportResult {
+    private func probeSupportSerially(
+        for config: CursorAgentConfig,
+        diagnosticPreflightID: UUID?
+    ) async throws -> ACPSupportResult {
         let key = cacheKey(for: config)
         invalidate(key: key)
         do {
             try Task.checkCancellation()
             guard !probeOwnership.hasPendingProbeAttempt() else {
+                recordCleanupPendingDiagnostic(stage: "preflight_entry", preflightID: diagnosticPreflightID)
                 return .unsupported(reason: "Cursor Agent CLI ACP preflight cleanup is still pending.")
             }
 
@@ -576,12 +876,22 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
                     break
                 }
 
-                guard let attempt = probeOwnership.beginProbeAttempt() else {
+                let diagnosticAttemptID = Self.makeDiagnosticID()
+                guard let attempt = probeOwnership.beginProbeAttempt(
+                    diagnosticSource: diagnosticSource,
+                    diagnosticPreflightID: diagnosticPreflightID,
+                    diagnosticAttemptID: diagnosticAttemptID,
+                    diagnosticCandidate: launch.candidate.command
+                ) else {
+                    recordCleanupPendingDiagnostic(stage: "attempt_admission", preflightID: diagnosticPreflightID)
                     failures.append("Cursor Agent CLI ACP preflight cleanup is still pending.")
                     break
                 }
 
                 let probeRunner = probeRunner
+                #if DEBUG
+                    let beforeProducerSettlement = beforeProbeProducerSettlementHookForTesting()
+                #endif
                 let producerTask = Task<ProbeProducerOutcome, Never> {
                     let outcome: ProbeProducerOutcome
                     do {
@@ -596,6 +906,9 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
                     } catch {
                         outcome = .failure(error)
                     }
+                    #if DEBUG
+                        await beforeProducerSettlement?()
+                    #endif
                     attempt.producerDidSettle(outcome)
                     return outcome
                 }

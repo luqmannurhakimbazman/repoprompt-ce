@@ -32,7 +32,10 @@ final class CursorACPHeadlessAgentProvider: HeadlessAgentProvider {
     ) {
         self.config = config
         let resolvedProviderFactory = providerFactory ?? { config in
-            CursorACPAgentProvider(config: config)
+            CursorACPAgentProvider(
+                config: config,
+                launchResolver: CursorACPLaunchResolver(source: .headless)
+            )
         }
         bridge = ACPHeadlessAgentProviderBridge(
             providerName: "Cursor",

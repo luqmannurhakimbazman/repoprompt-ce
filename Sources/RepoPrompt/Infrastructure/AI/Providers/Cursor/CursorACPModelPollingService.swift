@@ -39,7 +39,8 @@ struct CursorACPControllerModelDiscoveryClient: CursorACPModelDiscoveryClient {
                 modelString: modelString,
                 includeRepoPromptMCPServer: false,
                 cleanupProjectMCPApproval: false
-            )
+            ),
+            launchResolver: CursorACPLaunchResolver(source: .modelPolling)
         )
     }
 
