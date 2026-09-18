@@ -16,6 +16,10 @@ final class DefaultHTTPClient: HTTPClient, @unchecked Sendable {
     static let aiClient = DefaultHTTPClient(configuration: DefaultHTTPClient.makeConfiguration(requestTimeout: 120, resourceTimeout: 120))
     static let aiStreamingClient = DefaultHTTPClient(configuration: DefaultHTTPClient.makeConfiguration(requestTimeout: 120, resourceTimeout: 7200))
 
+    /// Judgments answer in about 100 ms. A 120-second `aiClient` timeout would let a
+    /// stalled call outlive every caller that could still use its answer.
+    static let judgmentClient = DefaultHTTPClient(configuration: DefaultHTTPClient.makeConfiguration(requestTimeout: 5, resourceTimeout: 5))
+
     private let session: URLSession
 
     init(configuration: URLSessionConfiguration) {
