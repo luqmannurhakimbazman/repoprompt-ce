@@ -337,8 +337,9 @@ actor BootstrapSocketConnectionManager: MCPServerConnection {
 
         // An ordinary stop may already have marked this connection closing while
         // awaiting an uncooperative handler. Its socket can still be live, so the
-        // watchdog must seal and answer outstanding IDs on that path too. The
-        // transport ledger makes repeated calls idempotent.
+        // transport's nonisolated entry seals outstanding IDs before it waits for
+        // the actor to finish any ordinary response write. Repeated calls remain
+        // idempotent through the transport ledger.
         let terminateControlFrame = encodedTerminateNotification(
             reason: .toolExecutionWatchdog,
             message: MCPExecutionWatchdogTerminalContext.message

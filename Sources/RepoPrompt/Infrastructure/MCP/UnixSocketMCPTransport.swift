@@ -65,6 +65,30 @@ import RepoPromptShared
         }
     }
 
+    private final class UnixSocketMCPTransportWriteHooks: @unchecked Sendable {
+        private let lock = NSLock()
+        private var ordinaryWriteWouldBlock: (@Sendable () -> Void)?
+        private var executionWatchdogDidSeal: (@Sendable () -> Void)?
+
+        func setOrdinaryWriteWouldBlock(_ hook: (@Sendable () -> Void)?) {
+            lock.withLock { ordinaryWriteWouldBlock = hook }
+        }
+
+        func setExecutionWatchdogDidSeal(_ hook: (@Sendable () -> Void)?) {
+            lock.withLock { executionWatchdogDidSeal = hook }
+        }
+
+        func notifyOrdinaryWriteWouldBlock() {
+            let hook = lock.withLock { ordinaryWriteWouldBlock }
+            hook?()
+        }
+
+        func notifyExecutionWatchdogDidSeal() {
+            let hook = lock.withLock { executionWatchdogDidSeal }
+            hook?()
+        }
+    }
+
     struct UnixSocketMCPTransportCleanupSnapshot {
         let hasActiveReader: Bool
         let pendingReaderCancellationCount: Int
@@ -224,6 +248,16 @@ private enum MCPExplicitNullRequestIDIngressValidation {
 /// suppressed, preserving one response per JSON-RPC request ID after the connection
 /// has become terminal.
 private final class MCPExecutionWatchdogResponseLedger: @unchecked Sendable {
+    enum PreparedFrameSealPolicy {
+        case preemptIfSealed
+        case allowAfterSeal
+    }
+
+    struct PreparedFrame {
+        let data: Data
+        let sealPolicy: PreparedFrameSealPolicy
+    }
+
     private let lock = NSLock()
     private var isSealed = false
     private var pendingRequestIDs: [JSONRPCBridgeID] = []
@@ -255,18 +289,34 @@ private final class MCPExecutionWatchdogResponseLedger: @unchecked Sendable {
         return true
     }
 
-    /// Atomically freezes ingress and claims the outstanding request IDs for the
-    /// watchdog's terminal JSON-RPC errors. Repeated watchdog aborts are idempotent.
-    func sealAndTakeOutstandingRequestIDs() -> [JSONRPCBridgeID] {
+    /// Atomically freezes ingress before waiting for the transport actor. Pending IDs
+    /// remain live until a complete ordinary response is delivered or the watchdog's
+    /// actor-isolated terminal writer claims them.
+    func seal() {
+        lock.lock()
+        guard !isSealed else {
+            lock.unlock()
+            return
+        }
+        isSealed = true
+        sealedRequestIDs.formUnion(pendingRequestIDSet)
+        lock.unlock()
+    }
+
+    /// Claims the still-outstanding IDs after the watchdog has acquired the transport
+    /// actor. A complete ordinary write which won the race retires its ID first.
+    func takeOutstandingRequestIDsAfterSeal() -> [JSONRPCBridgeID] {
         lock.lock()
         defer { lock.unlock() }
-        guard !isSealed else { return [] }
-        isSealed = true
-        sealedRequestIDs = pendingRequestIDSet
-        pendingRequestIDSet.removeAll()
+        guard isSealed else { return [] }
         let requestIDs = pendingRequestIDs
         pendingRequestIDs.removeAll()
+        pendingRequestIDSet.removeAll()
         return requestIDs
+    }
+
+    func isSealedSnapshot() -> Bool {
+        lock.withLock { isSealed }
     }
 
     func reset() {
@@ -278,15 +328,11 @@ private final class MCPExecutionWatchdogResponseLedger: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Claims ordinary SDK responses before their physical write begins. A watchdog
-    /// which arrives afterwards must not emit a second response for that request.
-    /// `UnixSocketMCPTransport.send` cannot interleave a watchdog after this claim:
-    /// its `writeAll` poll loop has no suspension point. If that writer starts a
-    /// partial frame and fails, the connection is closed because a terminal error
-    /// cannot be safely interleaved into the incomplete JSON-RPC stream.
-    /// After terminal sealing, strips every late response while preserving unrelated
-    /// notifications or responses from the same batch.
-    func prepareServerFrameForDelivery(_ frame: Data) -> Data? {
+    /// Prepares an SDK frame without retiring any response ID. Ordinary ownership is
+    /// committed only after the complete frame passes its final delivery-deadline
+    /// check. After terminal sealing, strips every late response while preserving
+    /// unrelated notifications or responses from the same batch.
+    func prepareServerFrameForDelivery(_ frame: Data) -> PreparedFrame? {
         let responseMetadata = JSONRPCBridgeFrameInspector.inspectPermissively(
             frame,
             direction: .serverToClient
@@ -307,20 +353,43 @@ private final class MCPExecutionWatchdogResponseLedger: @unchecked Sendable {
 
         lock.lock()
         let sealedIDs = sealedRequestIDs
-        if !isSealed {
-            pendingRequestIDSet.subtract(responseIDs)
-            pendingRequestIDs.removeAll { responseIDs.contains($0) }
-            lock.unlock()
-            return frame
-        }
+        let isSealed = isSealed
         lock.unlock()
 
-        guard hasExplicitNullResponse || responseIDs.contains(where: sealedIDs.contains) else { return frame }
+        guard isSealed else {
+            return PreparedFrame(data: frame, sealPolicy: .preemptIfSealed)
+        }
+        guard hasExplicitNullResponse || responseIDs.contains(where: sealedIDs.contains) else {
+            return PreparedFrame(data: frame, sealPolicy: .allowAfterSeal)
+        }
         return Self.removingResponses(
             for: sealedIDs,
             removingExplicitNullResponses: hasExplicitNullResponse,
             from: frame
-        )
+        ).map { PreparedFrame(data: $0, sealPolicy: .allowAfterSeal) }
+    }
+
+    /// Retires exact response identities only after a complete ordinary frame is on
+    /// the wire and its absolute delivery deadline remains valid.
+    func recordDeliveredServerFrame(_ frame: Data) {
+        let responseIDs = JSONRPCBridgeFrameInspector.inspectPermissively(
+            frame,
+            direction: .serverToClient
+        ).compactMap { metadata -> JSONRPCBridgeID? in
+            guard case .response = metadata.kind,
+                  let id = metadata.id,
+                  id != .null
+            else {
+                return nil
+            }
+            return id
+        }
+        guard !responseIDs.isEmpty else { return }
+
+        lock.lock()
+        pendingRequestIDSet.subtract(responseIDs)
+        pendingRequestIDs.removeAll { responseIDs.contains($0) }
+        lock.unlock()
     }
 
     private static func removingResponses(
@@ -574,6 +643,11 @@ final class MCPExportResponseDeliveryDeadlineRegistry: @unchecked Sendable {
 /// It provides efficient, low-latency communication using event-driven I/O via
 /// DispatchSourceRead, avoiding the CPU overhead of polling.
 public actor UnixSocketMCPTransport: Transport {
+    private enum WriteOutcome: Equatable {
+        case delivered
+        case preemptedByExecutionWatchdog
+    }
+
     private let socketURL: URL?
     private let timelineConnectionID: String?
     private let timelineCorrelationConnectionID: String?
@@ -670,6 +744,7 @@ public actor UnixSocketMCPTransport: Transport {
         private var deferNextReceiveOverflowTeardown = false
         private var debugBeforeInboundFrameOfferForTesting: (@Sendable () -> Void)?
         private var debugAfterWriteProgressForTesting: (@Sendable (_ bytesWritten: Int) -> Void)?
+        private nonisolated let debugWriteHooks = UnixSocketMCPTransportWriteHooks()
     #endif
 
     /// Generation counter that increments on each connection close/open cycle.
@@ -678,7 +753,7 @@ public actor UnixSocketMCPTransport: Transport {
 
     private var lastActivityTime: Date?
     private let responseDeliveryGate = MCPDomainResponseDeliveryTracker()
-    private let executionWatchdogResponseLedger = MCPExecutionWatchdogResponseLedger()
+    private nonisolated let executionWatchdogResponseLedger = MCPExecutionWatchdogResponseLedger()
 
     /// Connection timeout when waiting for socket to appear and accept connections
     private let connectionTimeout: TimeInterval = 30.0
@@ -872,7 +947,7 @@ public actor UnixSocketMCPTransport: Transport {
         }
 
         let candidateFrame = Self.frameWithNewlineIfNeeded(message)
-        guard let framed = executionWatchdogResponseLedger.prepareServerFrameForDelivery(candidateFrame) else {
+        guard let preparedFrame = executionWatchdogResponseLedger.prepareServerFrameForDelivery(candidateFrame) else {
             MCPResponseDeliveryTracer.emitFrame(
                 layer: "app_uds_transport",
                 phase: "watchdog_late_response_suppressed",
@@ -884,6 +959,7 @@ public actor UnixSocketMCPTransport: Transport {
             )
             return
         }
+        let framed = preparedFrame.data
         let responseDeadline: MCPExportResponseDeliveryDeadlineRegistry.Deadline? = if let timelineConnectionID {
             MCPExportResponseDeliveryDeadlineRegistry.shared.deadline(
                 forServerFrame: framed,
@@ -962,7 +1038,18 @@ public actor UnixSocketMCPTransport: Transport {
             // Encoding proves the SDK produced a response frame; this boundary proves the
             // transport began attempting the write, which distinguishes a later stall or close.
             emitResponseWriteTrace(phase: "transport_write_started")
-            try writeAll(framed, responseDeadline: responseDeadline)
+            let writeOutcome = try writeAll(
+                framed,
+                responseDeadline: responseDeadline,
+                sealPolicy: preparedFrame.sealPolicy
+            )
+            guard writeOutcome == .delivered else {
+                emitResponseWriteTrace(
+                    phase: "watchdog_inflight_response_preempted",
+                    terminalReason: "tool_execution_watchdog"
+                )
+                return
+            }
             try enforceResponseDeliveryDeadline(responseDeadline, framedByteCount: framed.count)
         } catch {
             // A cancelled partial frame cannot leave the connection reusable because its
@@ -978,6 +1065,7 @@ public actor UnixSocketMCPTransport: Transport {
             )
             throw error
         }
+        executionWatchdogResponseLedger.recordDeliveredServerFrame(framed)
         responseDeliveryGate.recordDeliveredServerFrame(framed)
         lastActivityTime = Date()
         if let timelineConnectionID {
@@ -1027,12 +1115,25 @@ public actor UnixSocketMCPTransport: Transport {
     /// cleanup grace expires and before `disconnect()` closes the socket. It makes
     /// only immediate nonblocking writes: a backpressured or partial stream cannot
     /// receive a further valid JSON-RPC frame and is closed instead.
-    func sendExecutionWatchdogTerminalErrors(
+    nonisolated func sendExecutionWatchdogTerminalErrors(
         context: MCPExecutionWatchdogTerminalContext,
         trailingControlFrame: Data? = nil
-    ) -> Int {
-        let requestIDs = executionWatchdogResponseLedger.sealAndTakeOutstandingRequestIDs()
+    ) async -> Int {
+        executionWatchdogResponseLedger.seal()
+        #if DEBUG
+            debugWriteHooks.notifyExecutionWatchdogDidSeal()
+        #endif
+        return await deliverExecutionWatchdogTerminalErrors(
+            context: context,
+            trailingControlFrame: trailingControlFrame
+        )
+    }
 
+    private func deliverExecutionWatchdogTerminalErrors(
+        context: MCPExecutionWatchdogTerminalContext,
+        trailingControlFrame: Data?
+    ) -> Int {
+        let requestIDs = executionWatchdogResponseLedger.takeOutstandingRequestIDsAfterSeal()
         var deliveredCount = 0
         for requestID in requestIDs {
             guard let frame = Self.executionWatchdogTerminalErrorFrame(
@@ -1484,6 +1585,18 @@ public actor UnixSocketMCPTransport: Transport {
             debugAfterWriteProgressForTesting = handler
         }
 
+        func debugSetOrdinaryWriteWouldBlockForTesting(
+            _ handler: (@Sendable () -> Void)?
+        ) {
+            debugWriteHooks.setOrdinaryWriteWouldBlock(handler)
+        }
+
+        func debugSetExecutionWatchdogDidSealForTesting(
+            _ handler: (@Sendable () -> Void)?
+        ) {
+            debugWriteHooks.setExecutionWatchdogDidSeal(handler)
+        }
+
         func debugTriggerReadErrorForCleanupTest(_ code: POSIXErrorCode = .EIO) {
             guard let identity = activeReaderOwnership?.identity else { return }
             handleReaderTerminal(.error(POSIXError(code)), from: identity)
@@ -1540,8 +1653,9 @@ public actor UnixSocketMCPTransport: Transport {
     /// Guards against FD reuse races by checking fdGeneration after each sleep.
     private func writeAll(
         _ data: Data,
-        responseDeadline: MCPExportResponseDeliveryDeadlineRegistry.Deadline?
-    ) throws {
+        responseDeadline: MCPExportResponseDeliveryDeadlineRegistry.Deadline?,
+        sealPolicy: MCPExecutionWatchdogResponseLedger.PreparedFrameSealPolicy
+    ) throws -> WriteOutcome {
         // Fast-fail if we're obviously disconnected
         guard isConnected, socketFD >= 0 else {
             throw MCPError.connectionClosed
@@ -1560,8 +1674,16 @@ public actor UnixSocketMCPTransport: Transport {
         }
         var remaining = data
         var lastProgressAt = Date()
+        var bytesWritten = 0
 
         while !remaining.isEmpty {
+            if let outcome = try executionWatchdogPreemptionOutcome(
+                sealPolicy: sealPolicy,
+                bytesWritten: bytesWritten,
+                totalBytes: data.count
+            ) {
+                return outcome
+            }
             try Task.checkCancellation()
             try enforceResponseDeliveryDeadline(responseDeadline, framedByteCount: data.count)
             // Re-check that we're still talking to the same connection epoch.
@@ -1587,14 +1709,28 @@ public actor UnixSocketMCPTransport: Transport {
                 if err == EINTR {
                     continue // Interrupted, retry
                 } else if err == EAGAIN || err == EWOULDBLOCK {
-                    try waitForSocketWritable(
+                    #if DEBUG
+                        debugWriteHooks.notifyOrdinaryWriteWouldBlock()
+                    #endif
+                    if let outcome = try executionWatchdogPreemptionOutcome(
+                        sealPolicy: sealPolicy,
+                        bytesWritten: bytesWritten,
+                        totalBytes: data.count
+                    ) {
+                        return outcome
+                    }
+                    if let outcome = try waitForSocketWritable(
                         fd: fd,
                         generation: gen,
                         lastProgressAt: lastProgressAt,
                         totalBytes: data.count,
                         bytesRemaining: remaining.count,
-                        responseDeadline: responseDeadline
-                    )
+                        bytesWritten: bytesWritten,
+                        responseDeadline: responseDeadline,
+                        sealPolicy: sealPolicy
+                    ) {
+                        return outcome
+                    }
                     continue
                 } else if Self.isPeerWriteHangupErrno(err) {
                     closeAfterSendFailure(MCPError.connectionClosed, cause: .writeHangup, initiator: .peer, errno: err)
@@ -1611,12 +1747,36 @@ public actor UnixSocketMCPTransport: Transport {
             }
 
             remaining = remaining.dropFirst(written)
+            bytesWritten += written
             lastProgressAt = Date()
             #if DEBUG
                 debugAfterWriteProgressForTesting?(written)
             #endif
             try enforceResponseDeliveryDeadline(responseDeadline, framedByteCount: data.count)
         }
+        return .delivered
+    }
+
+    private func executionWatchdogPreemptionOutcome(
+        sealPolicy: MCPExecutionWatchdogResponseLedger.PreparedFrameSealPolicy,
+        bytesWritten: Int,
+        totalBytes: Int
+    ) throws -> WriteOutcome? {
+        guard case .preemptIfSealed = sealPolicy,
+              executionWatchdogResponseLedger.isSealedSnapshot()
+        else {
+            return nil
+        }
+        guard bytesWritten > 0 else {
+            return .preemptedByExecutionWatchdog
+        }
+
+        let error = MCPError.transportError(UnixSocketExecutionWatchdogPartialFrameError(
+            bytesWritten: bytesWritten,
+            totalBytes: totalBytes
+        ))
+        closeAfterSendFailure(error, cause: .writeFailure)
+        throw error
     }
 
     private func waitForSocketWritable(
@@ -1625,9 +1785,18 @@ public actor UnixSocketMCPTransport: Transport {
         lastProgressAt: Date,
         totalBytes: Int,
         bytesRemaining: Int,
-        responseDeadline: MCPExportResponseDeliveryDeadlineRegistry.Deadline?
-    ) throws {
+        bytesWritten: Int,
+        responseDeadline: MCPExportResponseDeliveryDeadlineRegistry.Deadline?,
+        sealPolicy: MCPExecutionWatchdogResponseLedger.PreparedFrameSealPolicy
+    ) throws -> WriteOutcome? {
         while true {
+            if let outcome = try executionWatchdogPreemptionOutcome(
+                sealPolicy: sealPolicy,
+                bytesWritten: bytesWritten,
+                totalBytes: totalBytes
+            ) {
+                return outcome
+            }
             try Task.checkCancellation()
             try enforceResponseDeliveryDeadline(responseDeadline, framedByteCount: totalBytes)
             guard isConnected, fdGeneration == generation else {
@@ -1677,7 +1846,14 @@ public actor UnixSocketMCPTransport: Transport {
             }
 
             if pfd.revents & Int16(POLLOUT) != 0 {
-                return
+                if let outcome = try executionWatchdogPreemptionOutcome(
+                    sealPolicy: sealPolicy,
+                    bytesWritten: bytesWritten,
+                    totalBytes: totalBytes
+                ) {
+                    return outcome
+                }
+                return nil
             }
         }
     }
@@ -1714,6 +1890,15 @@ public actor UnixSocketMCPTransport: Transport {
 
         var description: String {
             "Unix socket response delivery exceeded its absolute deadline (frame bytes: \(framedByteCount))"
+        }
+    }
+
+    private struct UnixSocketExecutionWatchdogPartialFrameError: Swift.Error, CustomStringConvertible {
+        let bytesWritten: Int
+        let totalBytes: Int
+
+        var description: String {
+            "Execution watchdog sealed after a partial socket frame (written \(bytesWritten)/\(totalBytes) bytes)"
         }
     }
 

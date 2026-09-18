@@ -2157,6 +2157,135 @@ import XCTest
             MCPResponseDeliveryTracer.resetDebugEvents()
         }
 
+        func testUnixSocketWatchdogSealsWhileOrdinaryResponseWriteIsBackpressured() async throws {
+            var descriptors = [Int32](repeating: -1, count: 2)
+            guard Darwin.socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .ENFILE)
+            }
+            let transportFD = descriptors[0]
+            let peerFD = descriptors[1]
+            defer { Darwin.close(peerFD) }
+
+            var sendBufferBytes: Int32 = 1024
+            guard Darwin.setsockopt(
+                transportFD,
+                SOL_SOCKET,
+                SO_SNDBUF,
+                &sendBufferBytes,
+                socklen_t(MemoryLayout<Int32>.size)
+            ) == 0 else {
+                Darwin.close(transportFD)
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EINVAL)
+            }
+
+            let accepted = MCPExecutionOneShotSignal<Void>()
+            let ordinaryWriteWouldBlock = MCPExecutionOneShotSignal<Void>()
+            let ordinaryWriterWasReleased = MCPExecutionOneShotSignal<Bool>()
+            let watchdogDidSeal = MCPExecutionOneShotSignal<Void>()
+            let releaseOrdinaryWriter = DispatchSemaphore(value: 0)
+            let transport = try UnixSocketMCPTransport(
+                connectedFD: transportFD,
+                connectionID: UUID(),
+                connectionGeneration: 1,
+                writeStallTimeout: 1,
+                writePollIntervalMilliseconds: 1
+            )
+            await transport.debugSetBeforeInboundFrameOfferForTesting {
+                accepted.signal(())
+            }
+            await transport.debugSetOrdinaryWriteWouldBlockForTesting {
+                ordinaryWriteWouldBlock.signal(())
+                let result = releaseOrdinaryWriter.wait(timeout: .now() + 10)
+                ordinaryWriterWasReleased.signal(result == .success)
+            }
+            await transport.debugSetExecutionWatchdogDidSealForTesting {
+                watchdogDidSeal.signal(())
+            }
+            try await transport.connect()
+
+            var ordinaryResponseTask: Task<Void, Error>?
+            var terminalTask: Task<Int, Never>?
+            do {
+                let requestFrame = Data(
+                    "[{\"jsonrpc\":\"2.0\",\"id\":77,\"method\":\"ping\",\"params\":{}},{\"jsonrpc\":\"2.0\",\"id\":\"77\",\"method\":\"ping\",\"params\":{}}]\n".utf8
+                )
+                let requestWriteCount = requestFrame.withUnsafeBytes { bytes in
+                    Darwin.write(peerFD, bytes.baseAddress, bytes.count)
+                }
+                XCTAssertEqual(requestWriteCount, requestFrame.count)
+                await accepted.wait()
+                var inboundIterator = await transport.receive().makeAsyncIterator()
+                _ = try await inboundIterator.next()
+
+                let fillerByteCount = try Self.fillSocketSendBuffer(fd: transportFD)
+                XCTAssertGreaterThan(fillerByteCount, 0)
+
+                let activeOrdinaryResponseTask = Task {
+                    try await transport.send(Data(
+                        "{\"jsonrpc\":\"2.0\",\"id\":77,\"result\":{}}\n".utf8
+                    ))
+                }
+                ordinaryResponseTask = activeOrdinaryResponseTask
+                await ordinaryWriteWouldBlock.wait()
+
+                let invocationID = UUID()
+                let activeTerminalTask = Task {
+                    await transport.sendExecutionWatchdogTerminalErrors(context: .init(
+                        reason: "tool_execution_watchdog",
+                        toolName: MCPWindowToolName.prompt,
+                        handlerPhase: "provider_execution",
+                        invocationID: invocationID
+                    ))
+                }
+                terminalTask = activeTerminalTask
+                await watchdogDidSeal.wait()
+
+                try Self.drainBytes(count: fillerByteCount, from: peerFD)
+                releaseOrdinaryWriter.signal()
+                let ordinaryWriterReleased = await ordinaryWriterWasReleased.wait()
+                XCTAssertTrue(ordinaryWriterReleased)
+                try await activeOrdinaryResponseTask.value
+                ordinaryResponseTask = nil
+                let deliveredTerminalCount = await activeTerminalTask.value
+                XCTAssertEqual(deliveredTerminalCount, 2)
+                terminalTask = nil
+
+                let terminalFrames = try Self.readJSONLines(from: peerFD, expectedCount: 2)
+                let terminalObjects = try terminalFrames.map {
+                    try XCTUnwrap(JSONSerialization.jsonObject(with: $0) as? [String: Any])
+                }
+                XCTAssertEqual((terminalObjects[0]["id"] as? NSNumber)?.intValue, 77)
+                XCTAssertEqual(terminalObjects[1]["id"] as? String, "77")
+                for terminalObject in terminalObjects {
+                    let terminalError = try XCTUnwrap(terminalObject["error"] as? [String: Any])
+                    XCTAssertEqual((terminalError["code"] as? NSNumber)?.intValue, -32000)
+                    let terminalData = try XCTUnwrap(terminalError["data"] as? [String: Any])
+                    XCTAssertEqual(terminalData["reason"] as? String, "tool_execution_watchdog")
+                    XCTAssertEqual(terminalData["tool_name"] as? String, MCPWindowToolName.prompt)
+                    XCTAssertEqual(terminalData["handler_phase"] as? String, "provider_execution")
+                    XCTAssertEqual(terminalData["invocation_id"] as? String, invocationID.uuidString)
+                }
+                let deliveredSnapshot = await transport.responseDeliverySnapshot()
+                XCTAssertEqual(deliveredSnapshot.pendingRequestCount, 0)
+                let closeSnapshot = await transport.closeSnapshot()
+                XCTAssertNil(closeSnapshot)
+
+                await transport.debugSetOrdinaryWriteWouldBlockForTesting(nil)
+                await transport.debugSetExecutionWatchdogDidSealForTesting(nil)
+                await transport.disconnect()
+            } catch {
+                releaseOrdinaryWriter.signal()
+                ordinaryResponseTask?.cancel()
+                if let ordinaryResponseTask { _ = try? await ordinaryResponseTask.value }
+                terminalTask?.cancel()
+                if let terminalTask { _ = await terminalTask.value }
+                await transport.debugSetOrdinaryWriteWouldBlockForTesting(nil)
+                await transport.debugSetExecutionWatchdogDidSealForTesting(nil)
+                await transport.disconnect()
+                throw error
+            }
+        }
+
         func testUnixSocketPublishesDistinctCorrelationIdentityBeforeImmediateDispatch() async throws {
             var descriptors = [Int32](repeating: -1, count: 2)
             guard Darwin.socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0 else {
@@ -2701,6 +2830,44 @@ import XCTest
             let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
             XCTAssertEqual((object["id"] as? NSNumber)?.intValue, response.id)
             return try XCTUnwrap(object["error"] as? [String: Any])
+        }
+
+        private static func fillSocketSendBuffer(fd: Int32) throws -> Int {
+            let filler = [UInt8](repeating: UInt8(ascii: "x"), count: 4 * 1024)
+            var totalWritten = 0
+            while true {
+                let written = filler.withUnsafeBytes { bytes in
+                    Darwin.write(fd, bytes.baseAddress, bytes.count)
+                }
+                if written > 0 {
+                    totalWritten += written
+                    continue
+                }
+                if written < 0, errno == EINTR {
+                    continue
+                }
+                if written < 0, errno == EAGAIN || errno == EWOULDBLOCK {
+                    return totalWritten
+                }
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+        }
+
+        private static func drainBytes(count: Int, from fd: Int32) throws {
+            var remaining = count
+            var buffer = [UInt8](repeating: 0, count: 4 * 1024)
+            while remaining > 0 {
+                let byteCount = buffer.withUnsafeMutableBytes { bytes in
+                    Darwin.read(fd, bytes.baseAddress, min(bytes.count, remaining))
+                }
+                if byteCount < 0, errno == EINTR {
+                    continue
+                }
+                guard byteCount > 0 else {
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                }
+                remaining -= byteCount
+            }
         }
 
         private static func readJSONLines(from fd: Int32, expectedCount: Int) throws -> [Data] {
