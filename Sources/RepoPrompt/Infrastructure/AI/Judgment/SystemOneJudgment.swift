@@ -6,7 +6,7 @@ import Foundation
 ///
 /// A question is declared once in `JudgmentQuestionCatalogue` and never composed at a
 /// call site, so shadow measurements stay comparable across builds.
-// swiftlint:disable:next redundantSendable
+// swiftformat:disable redundantSendable
 struct JudgmentQuestion: Sendable, Equatable {
     let id: String
     let instructions: String
@@ -14,7 +14,7 @@ struct JudgmentQuestion: Sendable, Equatable {
 }
 
 /// The three question primitives the System One API answers.
-// swiftlint:disable:next redundantSendable
+// swiftformat:disable redundantSendable
 enum JudgmentQuestionKind: Sendable, Equatable {
     /// Probability that the answer is yes. Carries no confidence of its own.
     case noul(trueCriteria: String?, falseCriteria: String?)
@@ -52,16 +52,16 @@ extension JudgmentQuestion {
 ///
 /// The closed set exists so `JudgmentStateRedactor` cannot accidentally serialize a
 /// domain object whose contents nobody reviewed.
-// swiftlint:disable:next redundantSendable
+// swiftformat:disable redundantSendable
 enum JudgmentStateValue: Sendable, Equatable {
     case text(String)
     case list([String])
     case flag(Bool)
 
     var jsonValue: Any {
-        // Explicit returns: a switch expression requires one common branch type, and
-        // these three branches are String, [String], and Bool.
-        // swiftlint:disable:next redundantReturn
+        // Explicit returns for clarity: these branches produce three different types and
+        // reading them side by side is clearer than an inferred Any.
+        // swiftformat:disable redundantReturn
         switch self {
         case let .text(value):
             return value
@@ -77,7 +77,7 @@ enum JudgmentStateValue: Sendable, Equatable {
 ///
 /// Only `JudgmentStateRedactor` builds one. Consumers pass a `JudgmentRequest` instead,
 /// so no call site can add a field that the catalogue did not declare.
-// swiftlint:disable:next redundantSendable
+// swiftformat:disable redundantSendable
 struct JudgmentState: Sendable, Equatable {
     /// The catalogue entries this payload was built for.
     let questionIDs: [String]
@@ -91,7 +91,7 @@ struct JudgmentState: Sendable, Equatable {
 // MARK: - Answers
 
 /// One typed answer, shaped by the question that produced it.
-// swiftlint:disable:next redundantSendable
+// swiftformat:disable redundantSendable
 enum JudgmentAnswer: Sendable, Equatable {
     case noul(probability: Double)
     case choice(option: String, probabilities: [String: Double], confidence: Double)
@@ -120,7 +120,7 @@ enum JudgmentAnswer: Sendable, Equatable {
     }
 }
 
-// swiftlint:disable:next redundantSendable
+// swiftformat:disable redundantSendable
 struct JudgmentUsage: Sendable, Equatable {
     let inputTokens: Int
     let outputTokens: Int
@@ -130,7 +130,7 @@ struct JudgmentUsage: Sendable, Equatable {
 ///
 /// The version matters: the model is early access and versioned, and a version change
 /// must invalidate collected calibration data rather than silently extend it.
-// swiftlint:disable:next redundantSendable
+// swiftformat:disable redundantSendable
 struct JudgmentResult: Sendable, Equatable {
     let modelVersion: String
     let answersByQuestionID: [String: JudgmentAnswer]
