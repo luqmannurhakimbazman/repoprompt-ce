@@ -127,13 +127,45 @@ enum AgentAskUserValidationError: LocalizedError, Equatable {
     }
 }
 
+/// What the app does with an `ask_user` interaction whose inactivity window expired.
+enum AskUserTimeoutBehavior: String, CaseIterable, Hashable {
+    /// Hand the agent an empty, timed-out response. The agent decides what to do next.
+    case returnNoAnswer = "return_no_answer"
+    /// Select each question's recommended option so a waiting run keeps moving.
+    case chooseRecommended = "choose_recommended"
+
+    /// Decode a persisted value, falling back to the default for anything unrecognized.
+    init(storedValue: String?) {
+        self = storedValue.flatMap(AskUserTimeoutBehavior.init(rawValue:))
+            ?? ContextBuilderDefaults.questionTimeoutBehavior
+    }
+
+    /// Build the response an expired interaction resolves with.
+    func expiredResponse(
+        for interaction: AgentAskUserInteraction,
+        drafts: [String: AgentAskUserDraft],
+        elapsedSeconds: Int
+    ) -> AgentAskUserResponse {
+        switch self {
+        case .returnNoAnswer:
+            interaction.buildTimedOutResponse(drafts: drafts, elapsedSeconds: elapsedSeconds)
+        case .chooseRecommended:
+            interaction.buildAutoAnsweredResponse(drafts: drafts, elapsedSeconds: elapsedSeconds)
+        }
+    }
+}
+
 struct AgentAskUserOption: Hashable {
     let label: String
     let description: String?
+    /// Marks the option the agent would pick itself, used when the inactivity
+    /// window expires and nobody answered.
+    let isRecommended: Bool
 
-    init(label: String, description: String? = nil) {
+    init(label: String, description: String? = nil, isRecommended: Bool = false) {
         self.label = label
         self.description = description
+        self.isRecommended = isRecommended
     }
 }
 
@@ -166,6 +198,15 @@ struct AgentAskUserQuestion: Hashable {
 
     var optionLabels: [String] {
         options.map(\.label)
+    }
+
+    /// The option to fall back on when the interaction expires unanswered.
+    ///
+    /// Precedence is the first explicitly flagged option, then the first option.
+    /// Agents commonly list their preferred choice first, so the fallback keeps
+    /// the auto-answer working for callers that never set the flag.
+    var recommendedOption: AgentAskUserOption? {
+        options.first(where: \.isRecommended) ?? options.first
     }
 
     func orderedSelectedOptions(from draft: AgentAskUserDraft) -> [String] {
@@ -250,6 +291,28 @@ struct AgentAskUserResponse: Hashable {
     let timedOut: Bool
     let skipped: Bool
     let elapsedSeconds: Int
+    /// True when the app selected recommended options after the inactivity window
+    /// expired.
+    ///
+    /// A typed marker rather than something the agent has to infer: an
+    /// auto-answered payload is otherwise indistinguishable from one a person
+    /// filled in, and an agent that mistakes it for a human decision will treat a
+    /// provisional choice as settled. This mirrors `UserInstructionResponse.Origin`.
+    let autoAnswered: Bool
+
+    init(
+        answersByQuestionID: [String: AgentAskUserAnswer],
+        timedOut: Bool,
+        skipped: Bool,
+        elapsedSeconds: Int,
+        autoAnswered: Bool = false
+    ) {
+        self.answersByQuestionID = answersByQuestionID
+        self.timedOut = timedOut
+        self.skipped = skipped
+        self.elapsedSeconds = elapsedSeconds
+        self.autoAnswered = autoAnswered
+    }
 
     var jsonObject: [String: Any] {
         [
@@ -258,6 +321,7 @@ struct AgentAskUserResponse: Hashable {
             },
             "timed_out": timedOut,
             "skipped": skipped,
+            "auto_answered": autoAnswered,
             "elapsed_seconds": elapsedSeconds
         ]
     }
@@ -453,6 +517,36 @@ struct AgentAskUserInteraction: Identifiable, Hashable {
             ?? AgentAskUserResponse(answersByQuestionID: [:], timedOut: true, skipped: false, elapsedSeconds: elapsedSeconds)
     }
 
+    /// Resolve the interaction by selecting each question's recommended option.
+    ///
+    /// Only questions the user left untouched are filled in. A question with no
+    /// options cannot be auto-answered, so it is marked skipped rather than
+    /// returned blank, which keeps every question in the payload determinate.
+    func buildAutoAnsweredResponse(
+        drafts: [String: AgentAskUserDraft],
+        elapsedSeconds: Int
+    ) -> AgentAskUserResponse {
+        var resolved = drafts
+        for question in questions {
+            let draft = drafts[question.id] ?? AgentAskUserDraft()
+            guard !draft.hasContent else { continue }
+            if let recommended = question.recommendedOption {
+                resolved[question.id] = AgentAskUserDraft(selectedOptionLabels: [recommended.label])
+            } else {
+                resolved[question.id] = AgentAskUserDraft(skipped: true)
+            }
+        }
+
+        return (try? buildResponse(
+            drafts: resolved,
+            timedOut: false,
+            skipped: false,
+            elapsedSeconds: elapsedSeconds,
+            requireComplete: false,
+            autoAnswered: true
+        )) ?? buildTimedOutResponse(drafts: drafts, elapsedSeconds: elapsedSeconds)
+    }
+
     func buildSkippedResponse(elapsedSeconds: Int) -> AgentAskUserResponse {
         let skippedAnswers = questions.reduce(into: [String: AgentAskUserAnswer]()) { partialResult, question in
             partialResult[question.id] = AgentAskUserAnswer(answers: [], selectedOptions: [], customResponse: nil, skipped: true)
@@ -470,7 +564,8 @@ struct AgentAskUserInteraction: Identifiable, Hashable {
         timedOut: Bool,
         skipped: Bool,
         elapsedSeconds: Int,
-        requireComplete: Bool
+        requireComplete: Bool,
+        autoAnswered: Bool = false
     ) throws -> AgentAskUserResponse {
         try validate()
         var answers = [String: AgentAskUserAnswer]()
@@ -486,7 +581,8 @@ struct AgentAskUserInteraction: Identifiable, Hashable {
             answersByQuestionID: answers,
             timedOut: timedOut,
             skipped: skipped,
-            elapsedSeconds: elapsedSeconds
+            elapsedSeconds: elapsedSeconds,
+            autoAnswered: autoAnswered
         )
     }
 }

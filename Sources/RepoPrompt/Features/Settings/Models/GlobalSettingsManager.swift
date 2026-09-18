@@ -894,6 +894,7 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
             enhancementMode: settings?.enhancementMode.flatMap(PromptEnhancementMode.init(rawValue:))
                 ?? ContextBuilderDefaults.enhancementMode,
             questionTimeoutSeconds: settings?.questionTimeoutSeconds ?? ContextBuilderDefaults.questionTimeoutSeconds,
+            questionTimeoutBehavior: AskUserTimeoutBehavior(storedValue: settings?.questionTimeoutBehavior),
             allowUIClarifyingQuestions: settings?.allowUIClarifyingQuestions
                 ?? ContextBuilderDefaults.allowUIClarifyingQuestions,
             allowMCPClarifyingQuestions: settings?.allowMCPClarifyingQuestions
@@ -912,6 +913,7 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
             analysisTokenBudget: settings.analysisTokenBudget,
             enhancementMode: settings.enhancementMode.rawValue,
             questionTimeoutSeconds: settings.questionTimeoutSeconds,
+            questionTimeoutBehavior: settings.questionTimeoutBehavior.rawValue,
             allowUIClarifyingQuestions: settings.allowUIClarifyingQuestions,
             allowMCPClarifyingQuestions: settings.allowMCPClarifyingQuestions,
             followUpAnalysisEnabled: settings.followUpAnalysisEnabled
@@ -2628,6 +2630,7 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
                 analysisTokenBudget: behavior.analysisTokenBudget,
                 enhancementMode: behavior.enhancementMode.rawValue,
                 questionTimeoutSeconds: behavior.questionTimeoutSeconds,
+                questionTimeoutBehavior: behavior.questionTimeoutBehavior.rawValue,
                 allowUIClarifyingQuestions: behavior.allowUIClarifyingQuestions,
                 allowMCPClarifyingQuestions: behavior.allowMCPClarifyingQuestions,
                 followUpAnalysisEnabled: behavior.followUpAnalysisEnabled
@@ -2669,6 +2672,7 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
             enhancementMode: enhancementMode ?? ContextBuilderDefaults.enhancementMode,
             questionTimeoutSeconds: orderedSettings.lazy.compactMap(\.value.discoveryQuestionTimeoutSeconds).first
                 ?? ContextBuilderDefaults.questionTimeoutSeconds,
+            questionTimeoutBehavior: ContextBuilderDefaults.questionTimeoutBehavior,
             allowUIClarifyingQuestions: orderedSettings.lazy.compactMap(\.value.discoveryAllowClarifyingQuestions).first
                 ?? ContextBuilderDefaults.allowUIClarifyingQuestions,
             allowMCPClarifyingQuestions: orderedSettings.lazy

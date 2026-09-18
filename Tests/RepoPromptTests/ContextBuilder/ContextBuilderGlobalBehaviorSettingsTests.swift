@@ -69,6 +69,7 @@ final class ContextBuilderGlobalBehaviorSettingsTests: XCTestCase {
             analysisTokenBudget: 54321,
             enhancementMode: .augment,
             questionTimeoutSeconds: 91,
+            questionTimeoutBehavior: .chooseRecommended,
             allowUIClarifyingQuestions: false,
             allowMCPClarifyingQuestions: true,
             followUpAnalysisEnabled: true

@@ -13,6 +13,7 @@ struct ContextBuilderBehaviorSettings: Equatable {
     var analysisTokenBudget: Int
     var enhancementMode: PromptEnhancementMode
     var questionTimeoutSeconds: TimeInterval
+    var questionTimeoutBehavior: AskUserTimeoutBehavior
     var allowUIClarifyingQuestions: Bool
     var allowMCPClarifyingQuestions: Bool
     var followUpAnalysisEnabled: Bool
@@ -45,6 +46,9 @@ enum ContextBuilderDefaults {
     /// Default timeout (in seconds) for user responses to clarifying questions
     static let questionTimeoutSeconds = MCPTimeoutPolicy.askUserDefaultTimeoutSeconds
 
+    /// What happens when that timeout expires. Answering on the user's behalf is opt-in.
+    static let questionTimeoutBehavior: AskUserTimeoutBehavior = .returnNoAnswer
+
     /// Report-only watchdog for a live run that has not yet opened its owned MCP connection.
     static let mcpRoutingWatchdogSeconds: TimeInterval = 30
 
@@ -72,6 +76,7 @@ enum ContextBuilderDefaults {
         analysisTokenBudget: analysisTokenBudget,
         enhancementMode: enhancementMode,
         questionTimeoutSeconds: questionTimeoutSeconds,
+        questionTimeoutBehavior: questionTimeoutBehavior,
         allowUIClarifyingQuestions: allowUIClarifyingQuestions,
         allowMCPClarifyingQuestions: allowMCPClarifyingQuestions,
         followUpAnalysisEnabled: followUpAnalysisEnabled

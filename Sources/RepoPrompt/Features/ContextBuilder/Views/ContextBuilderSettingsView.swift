@@ -195,6 +195,28 @@ struct ContextBuilderSettingsView: View {
                         .font(fontPreset.captionFont)
                         .foregroundColor(.secondary)
                 }
+
+                // What happens once that window closes with no answer.
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("On Timeout")
+                        .font(fontPreset.font)
+                    Picker(
+                        "",
+                        selection: Binding(
+                            get: { contextBuilderVM.questionTimeoutBehavior },
+                            set: { contextBuilderVM.questionTimeoutBehavior = $0 }
+                        )
+                    ) {
+                        Text("Return No Answer").tag(AskUserTimeoutBehavior.returnNoAnswer)
+                        Text("Choose Recommended").tag(AskUserTimeoutBehavior.chooseRecommended)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+
+                    Text(questionTimeoutBehaviorDescription)
+                        .font(fontPreset.captionFont)
+                        .foregroundColor(.secondary)
+                }
             }
         } header: {
             Text("Shared Settings")
@@ -389,6 +411,15 @@ struct ContextBuilderSettingsView: View {
         } else {
             let minutes = Int(seconds) / 60
             return "\(minutes) min"
+        }
+    }
+
+    private var questionTimeoutBehaviorDescription: String {
+        switch contextBuilderVM.questionTimeoutBehavior {
+        case .returnNoAnswer:
+            "The agent is told nobody answered and decides what to do next."
+        case .chooseRecommended:
+            "The agent's recommended option is selected for you so a waiting run keeps moving. Anything you already picked is kept, and the agent is told the answer was automatic."
         }
     }
 }

@@ -825,6 +825,11 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         set { updateContextBuilderBehavior { $0.questionTimeoutSeconds = newValue } }
     }
 
+    var questionTimeoutBehavior: AskUserTimeoutBehavior {
+        get { settingsManager.contextBuilderBehaviorSettings().questionTimeoutBehavior }
+        set { updateContextBuilderBehavior { $0.questionTimeoutBehavior = newValue } }
+    }
+
     func resetContextBuilderBehaviorSettings() {
         settingsManager.setContextBuilderBehaviorSettings(ContextBuilderDefaults.behaviorSettings, commit: true)
     }
@@ -5505,6 +5510,12 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         questionTimeoutSeconds
     }
 
+    /// What an expired `ask_user` interaction resolves with, read when the window
+    /// closes so a mid-interaction settings change takes effect.
+    var askUserTimeoutBehavior: AskUserTimeoutBehavior {
+        settingsManager.contextBuilderBehaviorSettings().questionTimeoutBehavior
+    }
+
     /// Ask the user a clarifying question and wait for their response.
     /// Called by the ask_user tool implementation in MCPServerViewModel.
     ///
@@ -5747,7 +5758,8 @@ final class ContextBuilderAgentViewModel: ObservableObject {
             session.askUserContinuation = nil
 
             let elapsedSeconds = max(0, Int(Date().timeIntervalSince(pending.interaction.askedAt)))
-            let response = pending.interaction.buildTimedOutResponse(
+            let response = askUserTimeoutBehavior.expiredResponse(
+                for: pending.interaction,
                 drafts: pending.draftsByQuestionID,
                 elapsedSeconds: elapsedSeconds
             )
