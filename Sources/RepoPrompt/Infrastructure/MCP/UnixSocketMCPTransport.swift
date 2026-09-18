@@ -260,6 +260,7 @@ private final class MCPExecutionWatchdogResponseLedger: @unchecked Sendable {
 
     private let lock = NSLock()
     private var isSealed = false
+    private var isTerminalDeliveryPending = false
     private var pendingRequestIDs: [JSONRPCBridgeID] = []
     private var pendingRequestIDSet = Set<JSONRPCBridgeID>()
     private var sealedRequestIDs = Set<JSONRPCBridgeID>()
@@ -299,8 +300,16 @@ private final class MCPExecutionWatchdogResponseLedger: @unchecked Sendable {
             return
         }
         isSealed = true
+        isTerminalDeliveryPending = true
         sealedRequestIDs.formUnion(pendingRequestIDSet)
         lock.unlock()
+    }
+
+    /// Marks the terminal writer's actor-isolated error/control attempt complete. Only
+    /// after this publication may an unrelated frame prepared after sealing use the
+    /// still-open socket.
+    func finishTerminalDelivery() {
+        lock.withLock { isTerminalDeliveryPending = false }
     }
 
     /// Claims the still-outstanding IDs after the watchdog has acquired the transport
@@ -315,13 +324,22 @@ private final class MCPExecutionWatchdogResponseLedger: @unchecked Sendable {
         return requestIDs
     }
 
-    func isSealedSnapshot() -> Bool {
-        lock.withLock { isSealed }
+    func shouldPreemptOrdinaryWrite(
+        with sealPolicy: PreparedFrameSealPolicy
+    ) -> Bool {
+        lock.withLock {
+            if isTerminalDeliveryPending {
+                return true
+            }
+            guard case .preemptIfSealed = sealPolicy else { return false }
+            return isSealed
+        }
     }
 
     func reset() {
         lock.lock()
         isSealed = false
+        isTerminalDeliveryPending = false
         pendingRequestIDs.removeAll()
         pendingRequestIDSet.removeAll()
         sealedRequestIDs.removeAll()
@@ -743,6 +761,7 @@ public actor UnixSocketMCPTransport: Transport {
         /// Leaves a selected overflow pending so tests can race it with another teardown path.
         private var deferNextReceiveOverflowTeardown = false
         private var debugBeforeInboundFrameOfferForTesting: (@Sendable () -> Void)?
+        private var debugBeforeOrdinaryWriteForTesting: (@Sendable () -> Void)?
         private var debugAfterWriteProgressForTesting: (@Sendable (_ bytesWritten: Int) -> Void)?
         private nonisolated let debugWriteHooks = UnixSocketMCPTransportWriteHooks()
     #endif
@@ -1133,6 +1152,7 @@ public actor UnixSocketMCPTransport: Transport {
         context: MCPExecutionWatchdogTerminalContext,
         trailingControlFrame: Data?
     ) -> Int {
+        defer { executionWatchdogResponseLedger.finishTerminalDelivery() }
         let requestIDs = executionWatchdogResponseLedger.takeOutstandingRequestIDsAfterSeal()
         var deliveredCount = 0
         for requestID in requestIDs {
@@ -1579,6 +1599,12 @@ public actor UnixSocketMCPTransport: Transport {
             debugBeforeInboundFrameOfferForTesting = handler
         }
 
+        func debugSetBeforeOrdinaryWriteForTesting(
+            _ handler: (@Sendable () -> Void)?
+        ) {
+            debugBeforeOrdinaryWriteForTesting = handler
+        }
+
         func debugSetAfterWriteProgressForTesting(
             _ handler: (@Sendable (_ bytesWritten: Int) -> Void)?
         ) {
@@ -1675,6 +1701,9 @@ public actor UnixSocketMCPTransport: Transport {
         var remaining = data
         var lastProgressAt = Date()
         var bytesWritten = 0
+        #if DEBUG
+            debugBeforeOrdinaryWriteForTesting?()
+        #endif
 
         while !remaining.isEmpty {
             if let outcome = try executionWatchdogPreemptionOutcome(
@@ -1762,9 +1791,9 @@ public actor UnixSocketMCPTransport: Transport {
         bytesWritten: Int,
         totalBytes: Int
     ) throws -> WriteOutcome? {
-        guard case .preemptIfSealed = sealPolicy,
-              executionWatchdogResponseLedger.isSealedSnapshot()
-        else {
+        guard executionWatchdogResponseLedger.shouldPreemptOrdinaryWrite(
+            with: sealPolicy
+        ) else {
             return nil
         }
         guard bytesWritten > 0 else {
