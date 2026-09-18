@@ -298,6 +298,18 @@ Use `make dev-run` (or `make run`) only when it is safe to stop any existing Rep
 
 See [`docs/testing.md`](docs/testing.md) for the contributor workflow, test-quality guidance, exact focused-filter examples, and handoff checklist. Routine executable adds, renames, consolidations, and removals require the affected focused test plus broader target or full-suite validation when the changed boundary warrants it.
 
+## Answering ask_user
+
+When you call the `ask_user` tool:
+
+- List the option you recommend first, and mark it `"recommended": true`.
+- If the response contains `"timed_out": true`, do not re-ask the question and do
+  not stop. Proceed with your recommended option, say in one line that you chose
+  it because no one answered, then continue.
+- If the response contains `"auto_answered": true`, the app picked the
+  recommended option for you after the inactivity window expired. Treat it as a
+  provisional choice, not a human decision, and say so in your summary.
+
 ## Cleanup
 
 ```bash

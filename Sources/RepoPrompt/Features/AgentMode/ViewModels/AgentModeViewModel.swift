@@ -19712,6 +19712,12 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         }
     }
 
+    /// What an expired `ask_user` interaction resolves with, read when the window
+    /// closes so a mid-interaction settings change takes effect.
+    var askUserTimeoutBehavior: AskUserTimeoutBehavior {
+        GlobalSettingsStore.shared.contextBuilderBehaviorSettings().questionTimeoutBehavior
+    }
+
     private func schedulePendingAskUserTimeout(
         for session: TabSession,
         interactionID: UUID,
@@ -19749,7 +19755,8 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             updateBindingsFromSession(session)
 
             let elapsedSeconds = max(0, Int(Date().timeIntervalSince(pending.interaction.askedAt)))
-            let response = pending.interaction.buildTimedOutResponse(
+            let response = askUserTimeoutBehavior.expiredResponse(
+                for: pending.interaction,
                 drafts: pending.draftsByQuestionID,
                 elapsedSeconds: elapsedSeconds
             )

@@ -100,6 +100,7 @@ final class MCPAskUserToolProvider: MCPAppToolProviding {
             - Ask early, not at the end
             - Be specific - explain what you're trying to determine
             - Provide options when the choices are clear
+            - Mark the option you would pick yourself with `recommended: true`
             - Limit questions to avoid disrupting the user
 
             **Input:**
@@ -110,8 +111,9 @@ final class MCPAskUserToolProvider: MCPAppToolProviding {
 
             **Response:**
             - `answers`: Object keyed by question ID. Each value contains `answers`, `selected_options`, `custom_response`, and `skipped`.
-            - `timed_out`: True if the interaction timed out.
+            - `timed_out`: True if the interaction timed out. Proceed with your own recommendation rather than asking again.
             - `skipped`: True if user explicitly skipped the interaction.
+            - `auto_answered`: True if the app selected the recommended options after the inactivity window expired. Nobody confirmed these answers, so treat them as provisional and say so.
             - `elapsed_seconds`: How long the user took to respond.
             """,
             annotations: .repoPromptLocalEphemeralState,
@@ -129,13 +131,14 @@ final class MCPAskUserToolProvider: MCPAppToolProviding {
                                 "question": .string(description: "Question text to show the user."),
                                 "context": .string(description: "Optional per-question context."),
                                 "options": .array(
-                                    description: "Optional suggested answers. Each entry may be a string label or an object with label/description.",
+                                    description: "Optional suggested answers. Each entry may be a string label or an object with label/description/recommended.",
                                     items: .anyOf([
                                         .string(description: "Option label returned when selected."),
                                         .object(
                                             properties: [
                                                 "label": .string(description: "Option label returned when selected."),
-                                                "description": .string(description: "Optional option description shown to the user.")
+                                                "description": .string(description: "Optional option description shown to the user."),
+                                                "recommended": .boolean(description: "Marks the option you would pick yourself. Selected automatically if the interaction expires unanswered and the user enabled that behavior.")
                                             ],
                                             required: ["label"]
                                         )
@@ -377,7 +380,7 @@ final class MCPAskUserToolProvider: MCPAppToolProviding {
         return ParsedAskUserInteraction(interaction: interaction, includeLegacyResponse: includeLegacyResponse)
     }
 
-    private nonisolated static func parseAskUserQuestion(_ value: Value, index: Int) throws -> AgentAskUserQuestion {
+    nonisolated static func parseAskUserQuestion(_ value: Value, index: Int) throws -> AgentAskUserQuestion {
         guard let object = value.objectValue else {
             throw MCPError.invalidParams("questions[\(index)] must be an object.")
         }
@@ -422,9 +425,13 @@ final class MCPAskUserToolProvider: MCPAppToolProviding {
             guard let label = normalizedAskUserString(object["label"]) else {
                 throw MCPError.invalidParams("\(questionPath)[\(index)].label is required.")
             }
-            return AgentAskUserOption(
+            return try AgentAskUserOption(
                 label: label,
-                description: normalizedAskUserString(object["description"])
+                description: normalizedAskUserString(object["description"]),
+                isRecommended: optionalAskUserBool(
+                    object["recommended"],
+                    name: "\(questionPath)[\(index)].recommended"
+                ) ?? false
             )
         }
     }
@@ -450,6 +457,7 @@ final class MCPAskUserToolProvider: MCPAppToolProviding {
             }),
             "timed_out": .bool(response.timedOut),
             "skipped": .bool(response.skipped),
+            "auto_answered": .bool(response.autoAnswered),
             "elapsed_seconds": .int(response.elapsedSeconds)
         ]
         if includeLegacyResponse {

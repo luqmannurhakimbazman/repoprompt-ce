@@ -772,6 +772,7 @@ struct GlobalScalarPreferences: Codable, Equatable {
         var analysisTokenBudget: Int?
         var enhancementMode: String?
         var questionTimeoutSeconds: TimeInterval?
+        var questionTimeoutBehavior: String?
         var allowUIClarifyingQuestions: Bool?
         var allowMCPClarifyingQuestions: Bool?
         var followUpAnalysisEnabled: Bool?
@@ -781,6 +782,7 @@ struct GlobalScalarPreferences: Codable, Equatable {
             analysisTokenBudget: Int? = nil,
             enhancementMode: String? = nil,
             questionTimeoutSeconds: TimeInterval? = nil,
+            questionTimeoutBehavior: String? = nil,
             allowUIClarifyingQuestions: Bool? = nil,
             allowMCPClarifyingQuestions: Bool? = nil,
             followUpAnalysisEnabled: Bool? = nil
@@ -789,6 +791,7 @@ struct GlobalScalarPreferences: Codable, Equatable {
             self.analysisTokenBudget = analysisTokenBudget
             self.enhancementMode = enhancementMode
             self.questionTimeoutSeconds = questionTimeoutSeconds
+            self.questionTimeoutBehavior = questionTimeoutBehavior
             self.allowUIClarifyingQuestions = allowUIClarifyingQuestions
             self.allowMCPClarifyingQuestions = allowMCPClarifyingQuestions
             self.followUpAnalysisEnabled = followUpAnalysisEnabled
