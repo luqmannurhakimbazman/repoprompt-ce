@@ -15,13 +15,23 @@ final class JudgmentShadowRecorderTests: XCTestCase {
         )
     }
 
+    private var secondQuestion: AgentAskUserQuestion {
+        AgentAskUserQuestion(
+            id: "cache",
+            question: "Which cache should we use?",
+            options: [AgentAskUserOption(label: "Redis")]
+        )
+    }
+
     private func recorder(
         enabled: Bool,
         result: JudgmentResult?,
-        lines: LineSink
+        lines: LineSink,
+        judgeRequests: Counter = Counter()
     ) -> JudgmentShadowRecorder {
         JudgmentShadowRecorder(
             policy: JudgmentPolicy(judgeFactory: {
+                judgeRequests.increment()
                 guard let result else { return nil }
                 return StubSystemOneJudge(result: .success(result))
             }),
@@ -90,11 +100,13 @@ final class JudgmentShadowRecorderTests: XCTestCase {
 
     func testADisabledRecorderWritesNothing() async {
         let lines = LineSink()
-        let recorder = recorder(enabled: false, result: judgedResult, lines: lines)
+        let judgeRequests = Counter()
+        let recorder = recorder(enabled: false, result: judgedResult, lines: lines, judgeRequests: judgeRequests)
 
         await recorder.record(interactionID: UUID(), question: question, outcome: .skipped)
 
         XCTAssertTrue(lines.appended.isEmpty)
+        XCTAssertEqual(judgeRequests.count, 0, "A disabled recorder must not even build a judge.")
     }
 
     func testAnUnavailableJudgmentStillRecordsTheOutcome() async throws {
@@ -118,6 +130,52 @@ final class JudgmentShadowRecorderTests: XCTestCase {
         XCTAssertEqual(input.recommendedOptionLabel, "Postgres")
     }
 
+    func testTheFanOutOverloadRecordsEveryQuestion() async {
+        let lines = LineSink()
+        let result = judgedResult
+        let recorded = expectation(description: "records every question")
+        recorded.expectedFulfillmentCount = 2
+        let recorder = JudgmentShadowRecorder(
+            policy: JudgmentPolicy(judgeFactory: { StubSystemOneJudge(result: .success(result)) }),
+            isEnabled: { true },
+            appendLine: { line in
+                lines.append(line)
+                recorded.fulfill()
+            }
+        )
+
+        recorder.record(interactionID: UUID(), questions: [question, secondQuestion], outcome: .skipped)
+        await fulfillment(of: [recorded], timeout: 5)
+
+        XCTAssertEqual(
+            Set(lines.decodedRecords.compactMap { $0["question_id"] as? String }),
+            ["database", "cache"]
+        )
+        withExtendedLifetime(recorder) {}
+    }
+
+    func testADisabledFanOutRecordsNothing() async {
+        let lines = LineSink()
+        let result = judgedResult
+        let judgeRequests = Counter()
+        let recorder = JudgmentShadowRecorder(
+            policy: JudgmentPolicy(judgeFactory: {
+                judgeRequests.increment()
+                return StubSystemOneJudge(result: .success(result))
+            }),
+            isEnabled: { false },
+            appendLine: { lines.append($0) }
+        )
+
+        recorder.record(interactionID: UUID(), questions: [question, secondQuestion], outcome: .skipped)
+        await Task.yield()
+        await Task.yield()
+
+        XCTAssertTrue(lines.appended.isEmpty)
+        XCTAssertEqual(judgeRequests.count, 0, "A disabled fan-out must not even build a judge.")
+        withExtendedLifetime(recorder) {}
+    }
+
     // MARK: - Doubles
 
     final class LineSink {
@@ -132,6 +190,25 @@ final class JudgmentShadowRecorderTests: XCTestCase {
                 guard let data = line.data(using: .utf8) else { return nil }
                 return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             }
+        }
+    }
+
+    /// A lock-backed counter: `judgeFactory` is `@escaping @Sendable` and cannot capture
+    /// a mutable local. Mirrors `CallCounter` in `JudgmentPolicyTests`.
+    final class Counter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+
+        func increment() {
+            lock.lock()
+            value += 1
+            lock.unlock()
+        }
+
+        var count: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
         }
     }
 }

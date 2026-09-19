@@ -157,6 +157,7 @@ final class JudgmentShadowLogWriter {
     static let shared = JudgmentShadowLogWriter()
 
     private var resolvedFileURL: URL?
+    private var resolvedCacheKey: String?
 
     func append(_ line: String) {
         #if DEBUG
@@ -179,21 +180,34 @@ final class JudgmentShadowLogWriter {
     }
 
     #if DEBUG
+        /// Re-resolved whenever the override path or the calendar day changes, so a
+        /// mid-session settings edit and a run that crosses UTC midnight both pick up a
+        /// fresh URL instead of reusing an unconditionally cached one.
         private func fileURL() -> URL? {
-            if let resolvedFileURL { return resolvedFileURL }
             let override = GlobalSettingsStore.shared.judgmentShadowLogFilePath()
+            let dateStamp = Self.dateStampFormatter.string(from: Date())
+            let cacheKey = "\(override)|\(dateStamp)"
+            if let resolvedFileURL, resolvedCacheKey == cacheKey {
+                return resolvedFileURL
+            }
+
             let directory = override.isEmpty
                 ? FileManager.default.temporaryDirectory.appendingPathComponent("repoprompt-ce-judgment-shadow", isDirectory: true)
                 : URL(fileURLWithPath: override, isDirectory: true)
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
+            let url = directory.appendingPathComponent("judgment-shadow-\(dateStamp).jsonl")
+            resolvedFileURL = url
+            resolvedCacheKey = cacheKey
+            return url
+        }
+
+        private static let dateStampFormatter: DateFormatter = {
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "en_US_POSIX")
             formatter.timeZone = TimeZone(secondsFromGMT: 0)
             formatter.dateFormat = "yyyyMMdd"
-            let url = directory.appendingPathComponent("judgment-shadow-\(formatter.string(from: Date())).jsonl")
-            resolvedFileURL = url
-            return url
-        }
+            return formatter
+        }()
     #endif
 }
