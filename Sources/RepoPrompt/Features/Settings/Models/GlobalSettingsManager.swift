@@ -1617,6 +1617,26 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
             defaults.set(enabled, forKey: "emitAgentModePerfDiagnosticsToOSLog")
         }
 
+        func judgmentShadowEnabled() -> Bool {
+            defaults.bool(forKey: "judgmentShadowEnabled")
+        }
+
+        func setJudgmentShadowEnabled(_ enabled: Bool) {
+            defaults.set(enabled, forKey: "judgmentShadowEnabled")
+        }
+
+        func judgmentShadowLogFilePath() -> String {
+            defaults.string(forKey: "judgmentShadowLogFilePath") ?? ""
+        }
+
+        func setJudgmentShadowLogFilePath(_ path: String) {
+            if path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                defaults.removeObject(forKey: "judgmentShadowLogFilePath")
+            } else {
+                defaults.set(path, forKey: "judgmentShadowLogFilePath")
+            }
+        }
+
         func worktreeStartupBenchmarkDiagnosticsEnabled() -> Bool {
             defaults.bool(forKey: WorktreeStartupBenchmarkDiagnostics.enabledDefaultsKey)
         }

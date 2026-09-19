@@ -1014,6 +1014,24 @@ private enum AppSettingsMCPRegistry {
                         store.worktreeStartupBenchmarkDiagnosticsEnabled()
                     )
                 }
+            ),
+            boolSetting(
+                key: "judgment.shadow_enabled",
+                group: "judgment",
+                label: "System One Shadow Recording",
+                description: "DEBUG-only toggle for System One shadow recording. Records a judgment beside each ask_user outcome and changes no behavior. Sends the redacted question text to TypeSafe when a key is stored. Writes UserDefaults key 'judgmentShadowEnabled'.",
+                read: { .bool($0.judgmentShadowEnabled()) },
+                write: { try $0.setJudgmentShadowEnabled(requiredBool(from: $1)) }
+            ),
+            rawTextSetting(
+                key: "judgment.shadow_log_file_path",
+                group: "judgment",
+                label: "System One Shadow Log Directory",
+                description: "DEBUG-only directory override for System One shadow JSONL files. Empty string clears the override; enabled recording then writes to a non-workspace temp debug directory. Writes UserDefaults key 'judgmentShadowLogFilePath'.",
+                maxLength: debugDefaultsStringMaxLength,
+                allowEmpty: true,
+                read: { .string($0.judgmentShadowLogFilePath()) },
+                write: { try $0.setJudgmentShadowLogFilePath(requiredString(from: $1)) }
             )
         ]
     #else
