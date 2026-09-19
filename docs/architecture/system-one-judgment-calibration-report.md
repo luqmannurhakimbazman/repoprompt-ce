@@ -32,7 +32,8 @@ Safe band, as proposed by the spec: `needs_human_authority` at or below 0.15, an
 
 | Measure | Value | Threshold |
 | --- | --- | --- |
-| Human-answered records in the safe band | | at least 100 |
+| Human-answered records overall | | at least 100 |
+| Of those, records falling in the safe band | | reported, no floor |
 | Of those, the human picked the recommended option | | at least 90% |
 
 ## Gate 2: the confidence signal carries information

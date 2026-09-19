@@ -112,10 +112,20 @@ What leaves this machine, per recorded `ask_user` question:
 - the option labels and option descriptions,
 - which option the agent marked as recommended.
 
-What never leaves this machine: file contents, transcripts, environment variables,
-absolute paths, workspace names, secrets, and anything from a secret-bearing path. The
-payload is built only by `JudgmentStateRedactor`, whose declared field list is asserted by
-`JudgmentCatalogueRedactionTests`.
+Those five fields are the whole payload, and the set is fixed in code: `JudgmentState` sits
+behind a `fileprivate` initialiser in `JudgmentStateRedactor`'s file, so nothing outside
+that file can assemble a payload, and `JudgmentCatalogueRedactionTests` asserts the exact
+key set.
+
+**Read that list literally.** Those fields carry free text the calling agent wrote. The
+seam restricts which fields are sent, not what an agent put in them. If an agent writes a
+file path, a code snippet, or a credential into a question, its context, or an option
+description, that text is sent. A question like "Should I overwrite
+`/Users/you/project/main.swift`?" sends that path.
+
+What the app itself never contributes, because no request case carries it: file contents
+it read, transcript history, environment variables, workspace names, and the contents of
+any secret-bearing file. Those have no route into a payload.
 
 Records are written locally as JSONL under the temp debug directory, or under the
 directory named by `judgment.shadow_log_file_path`.

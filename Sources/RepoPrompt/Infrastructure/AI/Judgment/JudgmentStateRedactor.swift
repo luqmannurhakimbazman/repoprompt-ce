@@ -45,10 +45,14 @@ struct JudgmentPlan: Sendable, Equatable {
 
 /// The only place a `JudgmentState` is built in production code.
 ///
-/// Every field it emits is listed in the `switch` below. File contents, transcripts,
-/// environment values, absolute paths, and workspace names have no path into a payload,
-/// because no request case carries them, and `JudgmentState`'s `fileprivate` initialiser
-/// means no call site outside this file can construct one that bypasses this list.
+/// Every field it emits is listed in the `switch` below, and that switch fixes which
+/// fields are sent, not what they contain. The five `ask_user` fields carry free text the
+/// calling agent wrote, so a path, snippet, or credential an agent puts in its own
+/// question text does travel. What the app itself never contributes, because no request
+/// case carries it: file contents it read, transcript text, environment values, and
+/// workspace names. Those have no path into a payload, because no request case carries
+/// them, and `JudgmentState`'s `fileprivate` initialiser means no call site outside this
+/// file can construct one that bypasses this list.
 enum JudgmentStateRedactor {
     static func plan(for request: JudgmentRequest) -> JudgmentPlan {
         let questions = JudgmentQuestionCatalogue.questions(for: request)

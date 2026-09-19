@@ -190,8 +190,11 @@ outside that file can assemble a payload at all. A `#if DEBUG` `forTesting` fact
 exception and exists only in debug builds. That makes the allow-list a property the compiler holds
 rather than one reviewers must remember to check.
 
-It must never include file contents, transcript text, environment variables, absolute paths, workspace
-names, or anything read from a secret-bearing path. A test asserts the serialized payload's key set
+The redactor fixes which fields are sent, not what they contain. The five `ask_user` fields carry free
+text the calling agent wrote, so a path, snippet or credential an agent puts in its own question text
+does travel. What the app never contributes, because no request case carries it: file contents it
+read, transcript text, environment variables, workspace names, and anything read from a secret-bearing
+path. A test asserts the serialized payload's key set
 equals the declared set exactly, so adding a field to the request without declaring it fails the
 suite.
 
