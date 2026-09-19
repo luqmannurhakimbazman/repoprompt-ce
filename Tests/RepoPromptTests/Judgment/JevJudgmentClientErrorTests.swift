@@ -151,8 +151,11 @@ final class JevJudgmentClientErrorTests: XCTestCase {
     }
 
     func testAnAnswerOfTheWrongTypeIsMalformed() async {
+        // The fixture carries a valid `noul` value on purpose. Without it, the wrong-type
+        // body would also fail the missing-field guard, and this test would keep passing
+        // even if `requireType` were deleted — which is the guard it exists to pin.
         let body = Data("""
-        {"model":"jev-1.12","answers":{"authority":{"type":"choice","choice":"yes"}},"usage":{}}
+        {"model":"jev-1.12","answers":{"authority":{"type":"choice","choice":"yes","noul":0.5}},"usage":{}}
         """.utf8)
         let stub = StubHTTPClient(responses: [.status(200, body)])
 
