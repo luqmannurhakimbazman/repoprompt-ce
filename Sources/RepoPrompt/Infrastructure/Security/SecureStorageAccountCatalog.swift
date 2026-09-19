@@ -21,6 +21,7 @@ enum SecureStorageAccount: CaseIterable, Hashable, Identifiable {
     case openCodeCLIAPI
     case cursorCLIAPI
     case zAIAPI
+    case typeSafeSystemOneAPI
 
     // Claude-compatible backend accounts.
     case claudeCompatibleKimiAPIKey
@@ -70,6 +71,8 @@ enum SecureStorageAccount: CaseIterable, Hashable, Identifiable {
             "CursorCLIAPI"
         case .zAIAPI:
             "ZAIAPI"
+        case .typeSafeSystemOneAPI:
+            "TypeSafeSystemOneAPI"
         case .claudeCompatibleKimiAPIKey:
             "ClaudeCompatibleBackend.kimi.apiKey"
         case .claudeCompatibleCustomAPIKey:
@@ -140,6 +143,7 @@ enum SecureStorageAccount: CaseIterable, Hashable, Identifiable {
         case .openCodeCLIAPI: "OpenCode CLI API key"
         case .cursorCLIAPI: "Cursor CLI API key"
         case .zAIAPI: "Z.AI API key"
+        case .typeSafeSystemOneAPI: "TypeSafe System One API key"
         case .claudeCompatibleKimiAPIKey: "Kimi compatible API key"
         case .claudeCompatibleCustomAPIKey: "Custom Claude-compatible API key"
         case .agentPermissionSubagentDocument: "Subagent permissions"
