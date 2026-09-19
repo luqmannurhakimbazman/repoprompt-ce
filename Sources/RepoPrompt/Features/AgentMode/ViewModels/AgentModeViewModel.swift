@@ -19755,7 +19755,11 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             updateBindingsFromSession(session)
 
             let elapsedSeconds = max(0, Int(Date().timeIntervalSince(pending.interaction.askedAt)))
-            let response = askUserTimeoutBehavior.expiredResponse(
+            let behavior = await AskUserExpiryBehaviorResolver.effectiveBehavior(
+                configured: askUserTimeoutBehavior,
+                interaction: pending.interaction
+            )
+            let response = behavior.expiredResponse(
                 for: pending.interaction,
                 drafts: pending.draftsByQuestionID,
                 elapsedSeconds: elapsedSeconds
@@ -19837,6 +19841,17 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
 
         // Note: We don't append a .user item here - the response will be shown
         // via the ask_user tool_result.
+        JudgmentShadowRecorder.shared.record(
+            interactionID: pending.interaction.id,
+            questions: pending.interaction.questions,
+            outcome: skipAll ? .skipped : .answered(
+                pickedRecommended: pending.interaction.questions.allSatisfy { question in
+                    guard let recommended = question.recommendedOption?.label else { return false }
+                    return question.orderedSelectedOptions(from: pending.draftsByQuestionID[question.id] ?? AgentAskUserDraft())
+                        == [recommended]
+                }
+            )
+        )
         continuation.resume(returning: response)
     }
 

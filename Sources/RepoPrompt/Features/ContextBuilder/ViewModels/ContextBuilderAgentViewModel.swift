@@ -5886,7 +5886,11 @@ final class ContextBuilderAgentViewModel: ObservableObject {
             session.askUserContinuation = nil
 
             let elapsedSeconds = max(0, Int(Date().timeIntervalSince(pending.interaction.askedAt)))
-            let response = askUserTimeoutBehavior.expiredResponse(
+            let behavior = await AskUserExpiryBehaviorResolver.effectiveBehavior(
+                configured: askUserTimeoutBehavior,
+                interaction: pending.interaction
+            )
+            let response = behavior.expiredResponse(
                 for: pending.interaction,
                 drafts: pending.draftsByQuestionID,
                 elapsedSeconds: elapsedSeconds
@@ -6054,6 +6058,17 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         logAskUserResponse(response, in: session)
         updateRuntimeBindings(from: session)
 
+        JudgmentShadowRecorder.shared.record(
+            interactionID: pending.interaction.id,
+            questions: pending.interaction.questions,
+            outcome: skipAll ? .skipped : .answered(
+                pickedRecommended: pending.interaction.questions.allSatisfy { question in
+                    guard let recommended = question.recommendedOption?.label else { return false }
+                    return question.orderedSelectedOptions(from: pending.draftsByQuestionID[question.id] ?? AgentAskUserDraft())
+                        == [recommended]
+                }
+            )
+        )
         continuation.resume(returning: response)
     }
 
