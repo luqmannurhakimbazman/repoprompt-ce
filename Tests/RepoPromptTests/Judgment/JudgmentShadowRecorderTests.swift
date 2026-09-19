@@ -176,6 +176,70 @@ final class JudgmentShadowRecorderTests: XCTestCase {
         withExtendedLifetime(recorder) {}
     }
 
+    // MARK: - AskUserShadowOutcome.pickedRecommended
+
+    func testPickedRecommendedIsTrueWhenEveryRecommendationBearingQuestionMatchesIt() {
+        let picked = AskUserShadowOutcome.pickedRecommended(
+            for: [question, secondQuestion],
+            draftsByQuestionID: [
+                "database": AgentAskUserDraft(selectedOptionLabels: ["Postgres"]),
+                "cache": AgentAskUserDraft(selectedOptionLabels: ["Redis"])
+            ]
+        )
+
+        XCTAssertEqual(picked, true)
+    }
+
+    func testPickedRecommendedIsNilWhenNoQuestionHasARecommendation() {
+        let noOptions = AgentAskUserQuestion(id: "notes", question: "Any extra constraints?", allowsCustom: true)
+
+        let picked = AskUserShadowOutcome.pickedRecommended(for: [noOptions], draftsByQuestionID: [:])
+
+        XCTAssertNil(picked, "There is no recommendation to compare against, so the record should say nothing.")
+    }
+
+    func testPickedRecommendedIgnoresAQuestionWithNoOptionsRatherThanFailingTheWholeInteraction() {
+        let noOptions = AgentAskUserQuestion(id: "notes", question: "Any extra constraints?", allowsCustom: true)
+
+        let picked = AskUserShadowOutcome.pickedRecommended(
+            for: [question, noOptions],
+            draftsByQuestionID: ["database": AgentAskUserDraft(selectedOptionLabels: ["Postgres"])]
+        )
+
+        XCTAssertEqual(
+            picked,
+            true,
+            "A question with no options has no recommendation and must not drag a matching interaction to false."
+        )
+    }
+
+    func testPickedRecommendedReadsTheTransmittedAnswerNotTheStaleSelectionOnACustomOverride() {
+        // Single-select: choosing an option and then typing custom text means the custom
+        // text is what gets transmitted (see `AgentAskUserQuestion.answer(from:)`), not the
+        // leftover selection.
+        let draft = AgentAskUserDraft(selectedOptionLabels: ["Postgres"], customResponse: "MySQL")
+
+        let picked = AskUserShadowOutcome.pickedRecommended(for: [question], draftsByQuestionID: ["database": draft])
+
+        XCTAssertEqual(
+            picked,
+            false,
+            "The transmitted answer was the custom text, not the recommended option, however the draft looks."
+        )
+    }
+
+    func testPickedRecommendedReadsTheTransmittedAnswerNotTheStaleSelectionOnASkip() {
+        let draft = AgentAskUserDraft(selectedOptionLabels: ["Postgres"], skipped: true)
+
+        let picked = AskUserShadowOutcome.pickedRecommended(for: [question], draftsByQuestionID: ["database": draft])
+
+        XCTAssertEqual(
+            picked,
+            false,
+            "A skipped question transmits no answer, whatever selection is still sitting in the draft."
+        )
+    }
+
     // MARK: - Doubles
 
     final class LineSink {

@@ -6,7 +6,7 @@ import Foundation
 /// `.answered` carries a label, which is why it is the primary measurement set.
 // swiftformat:disable redundantSendable
 enum AskUserShadowOutcome: Sendable, Equatable {
-    case answered(pickedRecommended: Bool)
+    case answered(pickedRecommended: Bool?)
     case skipped
     case expired(behavior: String)
 
@@ -15,6 +15,31 @@ enum AskUserShadowOutcome: Sendable, Equatable {
         case .answered: "answered"
         case .skipped: "skipped"
         case .expired: "expired"
+        }
+    }
+}
+
+extension AskUserShadowOutcome {
+    /// Whether every question that has a recommendation received it as the answer it
+    /// actually transmitted, or `nil` when no question in the interaction has a
+    /// recommendation to compare against — there is no comparison to make, so the record
+    /// should say nothing rather than claim a match or a mismatch it never checked.
+    ///
+    /// Reads each question's transmitted answer through `AgentAskUserQuestion.answer(from:)`
+    /// rather than the raw draft, so a single-select answer that also carries custom text, or
+    /// a question the user skipped, is judged by what was actually sent rather than by a
+    /// leftover selection that was never sent. Does not reimplement `answer(from:)`'s
+    /// precedence rules.
+    static func pickedRecommended(
+        for questions: [AgentAskUserQuestion],
+        draftsByQuestionID: [String: AgentAskUserDraft]
+    ) -> Bool? {
+        let withRecommendation = questions.filter { $0.recommendedOption != nil }
+        guard !withRecommendation.isEmpty else { return nil }
+        return withRecommendation.allSatisfy { question in
+            guard let recommended = question.recommendedOption?.label else { return false }
+            let draft = draftsByQuestionID[question.id] ?? AgentAskUserDraft()
+            return question.answer(from: draft).answers == [recommended]
         }
     }
 }
@@ -84,7 +109,9 @@ final class JudgmentShadowRecorder {
 
         switch outcome {
         case let .answered(pickedRecommended):
-            record["picked_recommended"] = pickedRecommended
+            if let pickedRecommended {
+                record["picked_recommended"] = pickedRecommended
+            }
         case .skipped:
             break
         case let .expired(behavior):

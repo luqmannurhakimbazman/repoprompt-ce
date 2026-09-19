@@ -23,11 +23,11 @@ final class AskUserExpiryBehaviorResolverTests: XCTestCase {
         )
     }
 
-    private func recorder(result: Result<JudgmentResult, JudgmentError>) -> JudgmentShadowRecorder {
+    private func recorder(result: Result<JudgmentResult, JudgmentError>, lines: LineSink) -> JudgmentShadowRecorder {
         JudgmentShadowRecorder(
             policy: JudgmentPolicy(judgeFactory: { StubSystemOneJudge(result: result) }),
             isEnabled: { true },
-            appendLine: { _ in }
+            appendLine: { lines.append($0) }
         )
     }
 
@@ -41,14 +41,17 @@ final class AskUserExpiryBehaviorResolverTests: XCTestCase {
             usage: JudgmentUsage(inputTokens: 10, outputTokens: 0),
             latencySeconds: 0.1
         )
+        let lines = LineSink()
 
         let behavior = await AskUserExpiryBehaviorResolver.effectiveBehavior(
             configured: .returnNoAnswer,
             interaction: interaction,
-            recorder: recorder(result: .success(confidentlySafe))
+            recorder: recorder(result: .success(confidentlySafe), lines: lines)
         )
 
         XCTAssertEqual(behavior, .returnNoAnswer, "Slice 1 measures. It must not change what expiry does.")
+        XCTAssertEqual(lines.decodedRecords.count, 1, "One record per question in the interaction.")
+        XCTAssertEqual(lines.decodedRecords.first?["outcome"] as? String, "expired")
     }
 
     func testAConfiguredChooseRecommendedSurvivesAJudgmentThatSaysStop() async {
@@ -61,29 +64,34 @@ final class AskUserExpiryBehaviorResolverTests: XCTestCase {
             usage: JudgmentUsage(inputTokens: 10, outputTokens: 0),
             latencySeconds: 0.1
         )
+        let lines = LineSink()
 
         let behavior = await AskUserExpiryBehaviorResolver.effectiveBehavior(
             configured: .chooseRecommended,
             interaction: interaction,
-            recorder: recorder(result: .success(clearlyUnsafe))
+            recorder: recorder(result: .success(clearlyUnsafe), lines: lines)
         )
 
         XCTAssertEqual(behavior, .chooseRecommended)
+        XCTAssertEqual(lines.decodedRecords.count, 1, "One record per question in the interaction.")
     }
 
     func testAFailedJudgmentStillReturnsTheConfiguredBehavior() async {
         for configured in AskUserTimeoutBehavior.allCases {
+            let lines = LineSink()
             let behavior = await AskUserExpiryBehaviorResolver.effectiveBehavior(
                 configured: configured,
                 interaction: interaction,
-                recorder: recorder(result: .failure(.timedOut))
+                recorder: recorder(result: .failure(.timedOut), lines: lines)
             )
 
             XCTAssertEqual(behavior, configured)
+            XCTAssertEqual(lines.decodedRecords.count, 1, "A failed judgment must still leave a record behind.")
         }
     }
 
     func testTheExpiredResponseIsIdenticalWithAndWithoutTheResolver() async {
+        let lines = LineSink()
         let direct = AskUserTimeoutBehavior.chooseRecommended.expiredResponse(
             for: interaction,
             drafts: [:],
@@ -93,12 +101,77 @@ final class AskUserExpiryBehaviorResolverTests: XCTestCase {
         let resolved = await AskUserExpiryBehaviorResolver.effectiveBehavior(
             configured: .chooseRecommended,
             interaction: interaction,
-            recorder: recorder(result: .failure(.unauthorized))
+            recorder: recorder(result: .failure(.unauthorized), lines: lines)
         ).expiredResponse(for: interaction, drafts: [:], elapsedSeconds: 30)
 
         XCTAssertEqual(direct.answersByQuestionID, resolved.answersByQuestionID)
         XCTAssertEqual(direct.autoAnswered, resolved.autoAnswered)
         XCTAssertEqual(direct.timedOut, resolved.timedOut)
         XCTAssertEqual(direct.skipped, resolved.skipped)
+        XCTAssertEqual(lines.decodedRecords.count, 1, "One record per question in the interaction.")
+    }
+
+    // MARK: - The caller has already cancelled itself
+
+    /// Mirrors `JevJudgmentClient`'s cancellation-sensitive awaits (`Task.sleep`,
+    /// `URLSession.data(for:)`) without touching the network. `Task.sleep` throws
+    /// immediately when it runs inside a task that is already cancelled — the same failure
+    /// mode the real client hits when the resolver is called from a cancelled task — so it
+    /// stands in for the real client here.
+    private struct CancellationSensitiveJudge: SystemOneJudging {
+        let result: JudgmentResult
+
+        func judge(state: JudgmentState, questions: [JudgmentQuestion]) async throws -> JudgmentResult {
+            try await Task.sleep(nanoseconds: 1)
+            return result
+        }
+    }
+
+    func testARecordStillLandsWhenTheCallingTaskHasAlreadyCancelledItself() async {
+        let lines = LineSink()
+        let recorder = JudgmentShadowRecorder(
+            policy: JudgmentPolicy(judgeFactory: { CancellationSensitiveJudge(result: .stub()) }),
+            isEnabled: { true },
+            appendLine: { lines.append($0) }
+        )
+
+        // Both expiry sites call `invalidatePendingAskUserTimeout(for: session)` — which
+        // cancels `session.askUserTimeoutTask`, the very task this code runs inside — a few
+        // lines before calling the resolver. Reproduce that here: cancel the task from
+        // inside its own body, before it calls the resolver.
+        var handle: Task<Void, Never>!
+        handle = Task { @MainActor in
+            handle.cancel()
+            _ = await AskUserExpiryBehaviorResolver.effectiveBehavior(
+                configured: .returnNoAnswer,
+                interaction: interaction,
+                recorder: recorder
+            )
+        }
+        await handle.value
+
+        XCTAssertEqual(lines.decodedRecords.count, 1)
+        XCTAssertEqual(
+            lines.decodedRecords.first?["judgment_available"] as? Bool,
+            true,
+            "The resolver must hop to a task that does not inherit the caller's cancellation, or every expiry judgment silently comes back unavailable."
+        )
+    }
+
+    // MARK: - Doubles
+
+    private final class LineSink {
+        private(set) var appended: [String] = []
+
+        func append(_ line: String) {
+            appended.append(line)
+        }
+
+        var decodedRecords: [[String: Any]] {
+            appended.compactMap { line in
+                guard let data = line.data(using: .utf8) else { return nil }
+                return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            }
+        }
     }
 }

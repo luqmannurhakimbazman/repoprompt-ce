@@ -19845,11 +19845,10 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             interactionID: pending.interaction.id,
             questions: pending.interaction.questions,
             outcome: skipAll ? .skipped : .answered(
-                pickedRecommended: pending.interaction.questions.allSatisfy { question in
-                    guard let recommended = question.recommendedOption?.label else { return false }
-                    return question.orderedSelectedOptions(from: pending.draftsByQuestionID[question.id] ?? AgentAskUserDraft())
-                        == [recommended]
-                }
+                pickedRecommended: AskUserShadowOutcome.pickedRecommended(
+                    for: pending.interaction.questions,
+                    draftsByQuestionID: pending.draftsByQuestionID
+                )
             )
         )
         continuation.resume(returning: response)
