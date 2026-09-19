@@ -605,7 +605,13 @@ private struct AppSettingDefinition: @unchecked Sendable {
 }
 
 private enum AppSettingsMCPRegistry {
-    static let groups = ["ui", "prompt_packaging", "models", "context_builder", "mcp", "code_maps", "file_system", "agent_mode"]
+    // "judgment" is DEBUG-only: both of its settings live in debugDefinitions, so a
+    // release build must not advertise a group that can never hold a setting.
+    #if DEBUG
+        static let groups = ["ui", "prompt_packaging", "models", "context_builder", "mcp", "code_maps", "file_system", "agent_mode", "judgment"]
+    #else
+        static let groups = ["ui", "prompt_packaging", "models", "context_builder", "mcp", "code_maps", "file_system", "agent_mode"]
+    #endif
 
     private static let appearanceModes = ["System", "Light", "Dark"]
     private static let filePathDisplayOptions = ["Full", "Relative"]
