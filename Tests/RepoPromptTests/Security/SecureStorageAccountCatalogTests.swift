@@ -23,6 +23,7 @@ final class SecureStorageAccountCatalogTests: XCTestCase {
                 "OpenCodeCLIAPI",
                 "CursorCLIAPI",
                 "ZAIAPI",
+                "TypeSafeSystemOneAPI",
                 "ClaudeCompatibleBackend.kimi.apiKey",
                 "ClaudeCompatibleBackend.custom.apiKey",
                 "rp.agent.permissions.subagent.v1",
@@ -35,7 +36,7 @@ final class SecureStorageAccountCatalogTests: XCTestCase {
                 "rp.agent.permissions.devin.v1"
             ]
         )
-        XCTAssertEqual(Set(SecureStorageAccountCatalog.allAccounts.map(\.identifier)).count, 26)
+        XCTAssertEqual(Set(SecureStorageAccountCatalog.allAccounts.map(\.identifier)).count, 27)
     }
 
     func testIdentityMigrationV2CatalogRemainsFrozen() {
