@@ -99,3 +99,23 @@ Telemetry data is processed by Sentry (a third-party SaaS provider) acting as a 
 behalf of the RepoPrompt CE project. Sentry project-side data scrubbing is maintained as additional
 defense-in-depth where available; RepoPrompt's primary privacy boundary is avoiding sensitive data
 collection in the app before upload.
+
+## System One judgments (TypeSafe)
+
+DEBUG-only and off by default. Nothing is sent unless someone stores a TypeSafe API key
+under the `TypeSafeSystemOneAPI` secure-storage account **and** sets
+`judgment.shadow_enabled`. With no key, the app makes no request.
+
+What leaves this machine, per recorded `ask_user` question:
+
+- the question text and its optional per-question context,
+- the option labels and option descriptions,
+- which option the agent marked as recommended.
+
+What never leaves this machine: file contents, transcripts, environment variables,
+absolute paths, workspace names, secrets, and anything from a secret-bearing path. The
+payload is built only by `JudgmentStateRedactor`, whose declared field list is asserted by
+`JudgmentCatalogueRedactionTests`.
+
+Records are written locally as JSONL under the temp debug directory, or under the
+directory named by `judgment.shadow_log_file_path`.

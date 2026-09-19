@@ -1025,7 +1025,7 @@ private enum AppSettingsMCPRegistry {
                 key: "judgment.shadow_enabled",
                 group: "judgment",
                 label: "System One Shadow Recording",
-                description: "DEBUG-only toggle for System One shadow recording. Records a judgment beside each ask_user outcome and changes no behavior. Sends the redacted question text to TypeSafe when a key is stored. Writes UserDefaults key 'judgmentShadowEnabled'.",
+                description: "DEBUG-only toggle for System One shadow recording. Records a judgment beside each ask_user outcome and changes no behavior. Sends the redacted question text to TypeSafe, a third-party API, when a key is stored. Writes UserDefaults key 'judgmentShadowEnabled'.",
                 read: { .bool($0.judgmentShadowEnabled()) },
                 write: { try $0.setJudgmentShadowEnabled(requiredBool(from: $1)) }
             ),

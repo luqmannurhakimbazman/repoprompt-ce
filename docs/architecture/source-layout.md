@@ -67,6 +67,15 @@ Tests/
 
 The external target graph is intentionally stable at its boundary: the executable product and emitted binary remain `RepoPrompt`, while the `RepoPrompt` executable target contains only the process entry and delegates to the internal `RepoPromptApp` target. `RepoPromptApp` is not declared as a library product or separate Xcode convenience scheme. `RepoPromptCodeMapCore`, `RepoPromptRegexCore`, `RepoPromptWorkspaceCore`, and `RepoPromptDomainRuntime` are internal dependencies of `RepoPromptApp`, are not exposed as package products, and have direct owning test targets. `RepoPromptDomainRuntime` owns the AppKit-free, Sendable MCP runtime identity/lifecycle values, the canonical 28-tool name/capability/admission/client-policy catalog, immutable definitions and fingerprints, and the actor registry. App registration is process composition over that registry; no app-local registry facade or second schema authority remains. `RepoPromptCodeMapCoreTests` is the sole resource owner for pure CodeMap parser fixtures and goldens. Root app tests import `RepoPromptApp`; the separate `RepoPromptMCP` executable dependency remains unchanged.
 
+Infrastructure areas listed above with more to say than a tree comment holds:
+
+- `Infrastructure/AI/Judgment` — the System One judgment seam: value types, the
+  `SystemOneJudging` protocol, its one HTTP conformance, the closed question catalogue,
+  the state redactor, and `JudgmentPolicy`. Consumers call `JudgmentPolicy` with a
+  `JudgmentRequest` case and never construct a state payload. `JudgmentState` itself sits
+  behind a `fileprivate` initialiser in the redactor's file, so nothing outside that file
+  can assemble a payload. See `docs/architecture/system-one-judgment-seam.md`.
+
 The legacy top-level layer buckets under `Sources/RepoPrompt` have been pruned and must not be recreated:
 
 - `Models`
