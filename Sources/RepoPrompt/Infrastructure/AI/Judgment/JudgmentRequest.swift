@@ -5,7 +5,8 @@ import Foundation
 /// Consumers pass one of these rather than a `JudgmentState`, so the fields that can
 /// leave this machine are fixed by the type system instead of by review. Adding a field
 /// means editing this file and `JudgmentStateRedactor` together.
-enum JudgmentRequest: Equatable {
+// swiftformat:disable redundantSendable
+enum JudgmentRequest: Sendable, Equatable {
     case askUserExpiry(AskUserExpiryJudgmentInput)
 }
 
@@ -13,7 +14,8 @@ enum JudgmentRequest: Equatable {
 ///
 /// Deliberately not the domain type: `AgentAskUserQuestion` and `AgentAskUserInteraction`
 /// carry identifiers, timestamps, and drafts that must not be sent anywhere.
-struct AskUserExpiryJudgmentInput: Equatable {
+// swiftformat:disable redundantSendable
+struct AskUserExpiryJudgmentInput: Sendable, Equatable {
     let questionText: String
     let context: String?
     let optionLabels: [String]

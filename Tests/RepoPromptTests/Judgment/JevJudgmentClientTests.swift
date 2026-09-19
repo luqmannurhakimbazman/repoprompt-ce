@@ -26,7 +26,7 @@ final class JevJudgmentClientTests: XCTestCase {
     }
 
     private var state: JudgmentState {
-        JudgmentState(questionIDs: ["authority", "risk"], fields: ["question": .text("Which database?")])
+        JudgmentState.forTesting(questionIDs: ["authority", "risk"], fields: ["question": .text("Which database?")])
     }
 
     func testRequestCarriesTheEndpointAuthModelStateAndQuestions() async throws {

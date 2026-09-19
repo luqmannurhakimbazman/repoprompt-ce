@@ -12,7 +12,7 @@ final class JevJudgmentClientErrorTests: XCTestCase {
     )
 
     private var state: JudgmentState {
-        JudgmentState(questionIDs: ["authority"], fields: ["question": .text("Which database?")])
+        JudgmentState.forTesting(questionIDs: ["authority"], fields: ["question": .text("Which database?")])
     }
 
     private func client(

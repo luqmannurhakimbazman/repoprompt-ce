@@ -60,7 +60,7 @@ final class JudgmentWireFormatTests: XCTestCase {
     }
 
     func testStatePayloadSerializesEachValueKind() {
-        let state = JudgmentState(
+        let state = JudgmentState.forTesting(
             questionIDs: ["a"],
             fields: [
                 "question": .text("Which database?"),

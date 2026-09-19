@@ -73,21 +73,6 @@ enum JudgmentStateValue: Sendable, Equatable {
     }
 }
 
-/// The redacted payload sent as the request's `state`.
-///
-/// Only `JudgmentStateRedactor` builds one. Consumers pass a `JudgmentRequest` instead,
-/// so no call site can add a field that the catalogue did not declare.
-// swiftformat:disable redundantSendable
-struct JudgmentState: Sendable, Equatable {
-    /// The catalogue entries this payload was built for.
-    let questionIDs: [String]
-    let fields: [String: JudgmentStateValue]
-
-    var jsonObject: [String: Any] {
-        fields.mapValues(\.jsonValue)
-    }
-}
-
 // MARK: - Answers
 
 /// One typed answer, shaped by the question that produced it.
