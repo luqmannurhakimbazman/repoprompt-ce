@@ -611,9 +611,10 @@ private struct AppSettingDefinition: @unchecked Sendable {
 }
 
 private enum AppSettingsMCPRegistry {
-    // "judgment" is DEBUG-only: every one of its settings lives in debugDefinitions, so a
-    // release build must not advertise a group that can never hold a setting.
-    #if DEBUG
+    // "judgment" is advertised only where its settings exist: every one of them lives in
+    // judgmentDefinitions, which is empty unless REPOPROMPT_JUDGMENT_SHADOW is compiled in.
+    // A build must not advertise a group that can never hold a setting.
+    #if REPOPROMPT_JUDGMENT_SHADOW
         static let groups = ["ui", "prompt_packaging", "models", "context_builder", "mcp", "code_maps", "file_system", "agent_mode", "judgment"]
     #else
         static let groups = ["ui", "prompt_packaging", "models", "context_builder", "mcp", "code_maps", "file_system", "agent_mode"]
@@ -976,7 +977,7 @@ private enum AppSettingsMCPRegistry {
             write: { try $0.setShowEmptyFolders(requiredBool(from: $1)) },
             afterWrite: fileSystemPreferencesDidChangeHook(key: "file_system.show_empty_folders")
         )
-    ] + debugDefinitions
+    ] + debugDefinitions + judgmentDefinitions
 
     #if DEBUG
         private static let debugDefinitions: [AppSettingDefinition] = [
@@ -1026,7 +1027,18 @@ private enum AppSettingsMCPRegistry {
                         store.worktreeStartupBenchmarkDiagnosticsEnabled()
                     )
                 }
-            ),
+            )
+        ]
+    #else
+        private static let debugDefinitions: [AppSettingDefinition] = []
+    #endif
+
+    // Separate from debugDefinitions because the capability is separate: a release build
+    // that opts into shadow recording must expose these three settings and nothing else
+    // from the debug surface. Without them the feature would be compiled in and
+    // unreachable, since this is the only way to store the key or switch recording on.
+    #if REPOPROMPT_JUDGMENT_SHADOW
+        private static let judgmentDefinitions: [AppSettingDefinition] = [
             boolSetting(
                 key: "judgment.shadow_enabled",
                 group: "judgment",
@@ -1078,7 +1090,7 @@ private enum AppSettingsMCPRegistry {
             )
         ]
     #else
-        private static let debugDefinitions: [AppSettingDefinition] = []
+        private static let judgmentDefinitions: [AppSettingDefinition] = []
     #endif
 
     private static let definitionsByKey: [String: AppSettingDefinition] = Dictionary(

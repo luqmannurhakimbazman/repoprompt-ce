@@ -41,7 +41,7 @@ extension JudgmentPolicy {
     }
 }
 
-#if DEBUG
+#if REPOPROMPT_JUDGMENT_SHADOW
     /// The only writer of the System One key, behind the DEBUG `judgment.api_key` setting.
     ///
     /// The key is not a provider credential: `KeyManager.saveAPIKey` is keyed on

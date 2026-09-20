@@ -11,6 +11,34 @@ three gates hold. If they do not, the seam is deleted and the measured result st
 Shadow recording is DEBUG-only and inert until you both store a key and switch it on. Run
 these against the running CE debug app.
 
+### Collecting from a release build
+
+A debug app cannot produce a representative sample. The gate wants 100 human-answered
+interactions from real work, and a debug app launched to exercise the code yields questions
+invented to trigger it. Its ephemeral in-memory secure storage also drops the key on every
+relaunch unless the build carries an explicit `SIGN_IDENTITY`.
+
+`REPOPROMPT_JUDGMENT_SHADOW=1` compiles the seam into a release build. Everything stays off
+until a key is stored and the setting is switched on, exactly as in debug, and a release
+build without the flag contains none of it — no settings, no writer, no key store. Use this
+only on a build you maintain for yourself: it sends `ask_user` question text, which is free
+text an agent wrote and can carry paths or snippets, to a third-party API during real work.
+
+```bash
+REPOPROMPT_JUDGMENT_SHADOW=1 CONFIRM_LOCAL_PRODUCTION_INSTALL=1 make dev-install-local-production
+```
+
+Two differences from debug worth planning around. A release build uses the real Keychain, so
+the key survives relaunch and a multi-day sample is practical. And expiry waits for the
+judgment before resuming the agent while recording is on — about 0.43s on a warm connection,
+up to the 2-second deadline — which is now happening in the tool you use all day rather than
+in a test build.
+
+Set `judgment.shadow_log_file_path` to somewhere durable. The default is a temp directory,
+which the OS may clear underneath a sample you are still collecting.
+
+### Building the debug app
+
 You need a debug app first. If packaging stops on a certificate error fetching the pinned
 Codex runtime, the python.org Python's trust store is empty and `urllib` cannot verify
 github.com — `curl` working is not evidence against this. Prime the cache once with the

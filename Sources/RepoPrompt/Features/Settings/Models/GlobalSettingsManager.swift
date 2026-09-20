@@ -1617,6 +1617,13 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
             defaults.set(enabled, forKey: "emitAgentModePerfDiagnosticsToOSLog")
         }
 
+    #endif
+
+    // Compiled into every debug build, and into a release build only when
+    // REPOPROMPT_JUDGMENT_SHADOW is set. Separate from the DEBUG block above because a
+    // release build that opts into shadow recording must not thereby expose every other
+    // debug-only diagnostic setting.
+    #if REPOPROMPT_JUDGMENT_SHADOW
         func judgmentShadowEnabled() -> Bool {
             defaults.bool(forKey: "judgmentShadowEnabled")
         }
@@ -1636,6 +1643,9 @@ class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsProviding 
                 defaults.set(path, forKey: "judgmentShadowLogFilePath")
             }
         }
+    #endif
+
+    #if DEBUG
 
         func worktreeStartupBenchmarkDiagnosticsEnabled() -> Bool {
             defaults.bool(forKey: WorktreeStartupBenchmarkDiagnostics.enabledDefaultsKey)

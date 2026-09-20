@@ -272,7 +272,7 @@ final class JudgmentShadowRecorder {
     }
 
     private static func defaultIsEnabled() -> Bool {
-        #if DEBUG
+        #if REPOPROMPT_JUDGMENT_SHADOW
             GlobalSettingsStore.shared.judgmentShadowEnabled()
         #else
             false
@@ -300,7 +300,7 @@ final class JudgmentShadowLogWriter {
     }
 
     func append(_ line: String) {
-        #if DEBUG
+        #if REPOPROMPT_JUDGMENT_SHADOW
             guard let url = fileURL() else { return }
             guard let data = (line + "\n").data(using: .utf8) else { return }
             if !FileManager.default.fileExists(atPath: url.path) {
@@ -319,7 +319,7 @@ final class JudgmentShadowLogWriter {
         #endif
     }
 
-    #if DEBUG
+    #if REPOPROMPT_JUDGMENT_SHADOW
         /// Re-resolved whenever the override path or the calendar day changes, so a
         /// mid-session settings edit and a run that crosses UTC midnight both pick up a
         /// fresh URL instead of reusing an unconditionally cached one.

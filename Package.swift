@@ -11,6 +11,14 @@ let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().pa
 let environment = ProcessInfo.processInfo.environment
 let sentryEnabled = environment["REPOPROMPT_ENABLE_SENTRY"] == "1"
 
+/// System One shadow recording. Compiled into every debug build, and into a release build
+/// only when this is set. It sends `ask_user` question text — free text an agent wrote, which
+/// can carry paths or snippets — to a third-party API, so a shipped release must not contain
+/// it by default. A personally maintained fork collecting its own calibration sample is the
+/// case this exists for: the sample has to come from real daily use, which a debug build
+/// launched to test things cannot produce.
+let judgmentShadowEnabled = environment["REPOPROMPT_JUDGMENT_SHADOW"] == "1"
+
 var packageDependencies: [Package.Dependency] = [
     .package(url: "https://github.com/apple/swift-log.git", exact: "1.6.3"),
     .package(url: "https://github.com/sindresorhus/KeyboardShortcuts.git", exact: "2.3.0"),
@@ -95,10 +103,20 @@ var repoPromptCodeMapTestSwiftSettings: [SwiftSetting] = [
 
 if sentryEnabled {
     let sentryDependency = Target.Dependency.product(name: "Sentry", package: "sentry-cocoa")
-    repoPromptAppDependencies.append(sentryDependency)
     repoPromptAppSwiftSettings.append(.define("REPOPROMPT_SENTRY_ENABLED"))
+    repoPromptAppDependencies.append(sentryDependency)
     repoPromptTestDependencies.append(sentryDependency)
     repoPromptTestSwiftSettings.append(.define("REPOPROMPT_SENTRY_ENABLED"))
+}
+
+// One symbol rather than `#if DEBUG || REPOPROMPT_JUDGMENT_SHADOW` at every guard: the
+// sites read as a capability rather than as a build configuration, and there is one place
+// to change if the policy changes.
+repoPromptAppSwiftSettings.append(.define("REPOPROMPT_JUDGMENT_SHADOW", .when(configuration: .debug)))
+repoPromptTestSwiftSettings.append(.define("REPOPROMPT_JUDGMENT_SHADOW", .when(configuration: .debug)))
+if judgmentShadowEnabled {
+    repoPromptAppSwiftSettings.append(.define("REPOPROMPT_JUDGMENT_SHADOW"))
+    repoPromptTestSwiftSettings.append(.define("REPOPROMPT_JUDGMENT_SHADOW"))
 }
 
 let swift6LanguageMode: [SwiftSetting] = [
