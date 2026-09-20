@@ -92,8 +92,15 @@ final class JevJudgmentClientTests: XCTestCase {
         "probabilities":{"compile":0.9,"flake":0.1},"confidence":0.88}},"usage":{"input_tokens":90,"output_tokens":0}}
         """.utf8)
 
+        // The state must declare the question it is sent with: `makeRequest` rejects a
+        // payload the redactor did not build for these questions.
+        let triageState = JudgmentState.forTesting(
+            questionIDs: ["triage"],
+            fields: ["question": .text("Which database?")]
+        )
+
         let result = try await client(StubHTTPClient(responses: [.status(200, body)]))
-            .judge(state: state, questions: [choiceQuestion])
+            .judge(state: triageState, questions: [choiceQuestion])
 
         XCTAssertEqual(
             result.answersByQuestionID["triage"],

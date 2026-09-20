@@ -605,7 +605,7 @@ private struct AppSettingDefinition: @unchecked Sendable {
 }
 
 private enum AppSettingsMCPRegistry {
-    // "judgment" is DEBUG-only: both of its settings live in debugDefinitions, so a
+    // "judgment" is DEBUG-only: every one of its settings lives in debugDefinitions, so a
     // release build must not advertise a group that can never hold a setting.
     #if DEBUG
         static let groups = ["ui", "prompt_packaging", "models", "context_builder", "mcp", "code_maps", "file_system", "agent_mode", "judgment"]
@@ -1038,6 +1038,16 @@ private enum AppSettingsMCPRegistry {
                 allowEmpty: true,
                 read: { .string($0.judgmentShadowLogFilePath()) },
                 write: { try $0.setJudgmentShadowLogFilePath(requiredString(from: $1)) }
+            ),
+            rawTextSetting(
+                key: "judgment.api_key",
+                group: "judgment",
+                label: "System One API Key",
+                description: "DEBUG-only write-only store for the TypeSafe System One API key, held in secure storage rather than UserDefaults. A read returns the presence indicator 'set' or 'not set' and never the key itself. An empty or whitespace-only value deletes the stored key. A default debug build uses ephemeral in-memory secure storage, so the key does not survive relaunch unless the app was built with an explicit SIGN_IDENTITY.",
+                maxLength: debugDefaultsStringMaxLength,
+                allowEmpty: true,
+                read: { _ in .string(JudgmentAPIKeyStore.presenceLabel()) },
+                write: { _, value in try JudgmentAPIKeyStore.write(requiredString(from: value)) }
             )
         ]
     #else

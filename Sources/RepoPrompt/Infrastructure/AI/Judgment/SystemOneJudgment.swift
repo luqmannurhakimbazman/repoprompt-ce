@@ -1,12 +1,16 @@
 import Foundation
 
+// Explicit `Sendable` conformances are intentional actor-boundary contracts. An
+// unsuffixed directive disables the rule to end of file, so one at the top covers
+// every type below it.
+// swiftformat:disable redundantSendable
+
 // MARK: - Questions
 
 /// One question the app asks a System One model about program state.
 ///
 /// A question is declared once in `JudgmentQuestionCatalogue` and never composed at a
 /// call site, so shadow measurements stay comparable across builds.
-// swiftformat:disable redundantSendable
 struct JudgmentQuestion: Sendable, Equatable {
     let id: String
     let instructions: String
@@ -14,7 +18,6 @@ struct JudgmentQuestion: Sendable, Equatable {
 }
 
 /// The three question primitives the System One API answers.
-// swiftformat:disable redundantSendable
 enum JudgmentQuestionKind: Sendable, Equatable {
     /// Probability that the answer is yes. Carries no confidence of its own.
     case noul(trueCriteria: String?, falseCriteria: String?)
@@ -52,7 +55,6 @@ extension JudgmentQuestion {
 ///
 /// The closed set exists so `JudgmentStateRedactor` cannot accidentally serialize a
 /// domain object whose contents nobody reviewed.
-// swiftformat:disable redundantSendable
 enum JudgmentStateValue: Sendable, Equatable {
     case text(String)
     case list([String])
@@ -76,7 +78,6 @@ enum JudgmentStateValue: Sendable, Equatable {
 // MARK: - Answers
 
 /// One typed answer, shaped by the question that produced it.
-// swiftformat:disable redundantSendable
 enum JudgmentAnswer: Sendable, Equatable {
     case noul(probability: Double)
     case choice(option: String, probabilities: [String: Double], confidence: Double)
@@ -105,7 +106,6 @@ enum JudgmentAnswer: Sendable, Equatable {
     }
 }
 
-// swiftformat:disable redundantSendable
 struct JudgmentUsage: Sendable, Equatable {
     let inputTokens: Int
     let outputTokens: Int
@@ -115,7 +115,6 @@ struct JudgmentUsage: Sendable, Equatable {
 ///
 /// The version matters: the model is early access and versioned, and a version change
 /// must invalidate collected calibration data rather than silently extend it.
-// swiftformat:disable redundantSendable
 struct JudgmentResult: Sendable, Equatable {
     let modelVersion: String
     let answersByQuestionID: [String: JudgmentAnswer]

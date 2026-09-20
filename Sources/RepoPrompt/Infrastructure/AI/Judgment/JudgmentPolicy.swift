@@ -40,3 +40,47 @@ extension JudgmentPolicy {
         try? SecureKeysService().getPlainValue(for: .typeSafeSystemOneAPI)
     }
 }
+
+#if DEBUG
+    /// The only writer of the System One key, behind the DEBUG `judgment.api_key` setting.
+    ///
+    /// The key is not a provider credential: `KeyManager.saveAPIKey` is keyed on
+    /// `AIProviderType`, and registering this model there is prohibited, so slice 1 needs
+    /// its own writer or it can never collect the data it exists to collect.
+    ///
+    /// Nothing here reads the key back out. `presenceLabel()` reports only whether one is
+    /// stored, so the secret has no path into `app_settings list` output or a diagnostics
+    /// dump. `JudgmentPolicy.storedAPIKey()` above is the sole reader, and it hands the
+    /// value straight to an `Authorization` header.
+    @MainActor
+    enum JudgmentAPIKeyStore {
+        static let presentLabel = "set"
+        static let absentLabel = "not set"
+
+        /// Substituted by tests so the suite never reaches a real Keychain. `nil` in
+        /// production, where every call goes to `SecureKeysService`.
+        static var storageForTesting: (any SecurePlainStringStoring)?
+
+        /// Whether a key is stored. Never the key.
+        static func presenceLabel() -> String {
+            let stored = (try? storage().getPlainValue(for: .typeSafeSystemOneAPI)) ?? nil
+            return stored?.isEmpty == false ? presentLabel : absentLabel
+        }
+
+        /// Stores a key, or deletes the account when the value is empty or only
+        /// whitespace. The stored value is trimmed: a key pasted with a trailing newline
+        /// would otherwise fail authorization for reasons nothing reports.
+        static func write(_ value: String) throws {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                try storage().deletePlainValue(for: .typeSafeSystemOneAPI)
+            } else {
+                try storage().savePlainValue(trimmed, for: .typeSafeSystemOneAPI)
+            }
+        }
+
+        private static func storage() -> any SecurePlainStringStoring {
+            storageForTesting ?? SecureKeysService()
+        }
+    }
+#endif

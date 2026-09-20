@@ -19817,7 +19817,15 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         try? resolveAskUserResponse(for: session, interactionID: interactionID, skipAll: true)
     }
 
-    private func resolveAskUserResponse(for session: TabSession, interactionID: UUID, skipAll: Bool) throws {
+    private func resolveAskUserResponse(
+        for session: TabSession,
+        interactionID: UUID,
+        skipAll: Bool,
+        // `nil` means the app-wide recorder. A default argument is evaluated in a
+        // nonisolated context, so naming `.shared` here would read a main-actor property
+        // from one.
+        recorder: JudgmentShadowRecorder? = nil
+    ) throws {
         guard let pending = session.pendingAskUser,
               pending.interaction.id == interactionID,
               let continuation = session.askUserContinuation
@@ -19841,15 +19849,10 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
 
         // Note: We don't append a .user item here - the response will be shown
         // via the ask_user tool_result.
-        JudgmentShadowRecorder.shared.record(
-            interactionID: pending.interaction.id,
-            questions: pending.interaction.questions,
-            outcome: skipAll ? .skipped : .answered(
-                pickedRecommended: AskUserShadowOutcome.pickedRecommended(
-                    for: pending.interaction.questions,
-                    draftsByQuestionID: pending.draftsByQuestionID
-                )
-            )
+        (recorder ?? .shared).recordResolved(
+            interaction: pending.interaction,
+            draftsByQuestionID: pending.draftsByQuestionID,
+            skipAll: skipAll
         )
         continuation.resume(returning: response)
     }

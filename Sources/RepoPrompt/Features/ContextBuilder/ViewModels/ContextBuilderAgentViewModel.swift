@@ -6034,7 +6034,15 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         return false
     }
 
-    private func resolveAskUserResponse(for session: TabSession, interactionID: UUID, skipAll: Bool) throws {
+    private func resolveAskUserResponse(
+        for session: TabSession,
+        interactionID: UUID,
+        skipAll: Bool,
+        // `nil` means the app-wide recorder. A default argument is evaluated in a
+        // nonisolated context, so naming `.shared` here would read a main-actor property
+        // from one.
+        recorder: JudgmentShadowRecorder? = nil
+    ) throws {
         guard pendingAskUserIsOwnedByActiveRun(session, interactionID: interactionID),
               let pending = session.pendingAskUser,
               pending.interaction.id == interactionID,
@@ -6058,15 +6066,10 @@ final class ContextBuilderAgentViewModel: ObservableObject {
         logAskUserResponse(response, in: session)
         updateRuntimeBindings(from: session)
 
-        JudgmentShadowRecorder.shared.record(
-            interactionID: pending.interaction.id,
-            questions: pending.interaction.questions,
-            outcome: skipAll ? .skipped : .answered(
-                pickedRecommended: AskUserShadowOutcome.pickedRecommended(
-                    for: pending.interaction.questions,
-                    draftsByQuestionID: pending.draftsByQuestionID
-                )
-            )
+        (recorder ?? .shared).recordResolved(
+            interaction: pending.interaction,
+            draftsByQuestionID: pending.draftsByQuestionID,
+            skipAll: skipAll
         )
         continuation.resume(returning: response)
     }

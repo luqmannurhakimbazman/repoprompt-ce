@@ -74,6 +74,56 @@ final class JevJudgmentClientErrorTests: XCTestCase {
         XCTAssertEqual(stub.recordedRequests.count, 1)
     }
 
+    func testALongValidationMessageIsTruncatedWithoutBeingLost() async {
+        // 600 three-byte characters: truncating the `Data` at 512 bytes would split the
+        // 171st character's UTF-8 sequence and decode to nothing, discarding the server's
+        // only account of why it rejected the request.
+        let body = Data(String(repeating: "€", count: 600).utf8)
+        XCTAssertNil(String(data: body.prefix(512), encoding: .utf8), "The cut must actually split a sequence.")
+        let stub = StubHTTPClient(responses: [.status(422, body)])
+
+        guard case let .invalidRequest(message) = await judgmentError(from: stub) else {
+            return XCTFail("expected invalidRequest")
+        }
+        XCTAssertEqual(message.count, 512, "The message is shortened by characters, not bytes.")
+        XCTAssertTrue(message.hasPrefix("€€"))
+    }
+
+    // MARK: - Redaction allow-list
+
+    func testAStateRedactedForOtherQuestionsIsRejectedBeforeAnyRequest() async {
+        let stub = StubHTTPClient(responses: [.status(200, okBody)])
+        let mismatched = JudgmentState.forTesting(
+            questionIDs: ["something.else"],
+            fields: ["question": .text("Which database?")]
+        )
+
+        do {
+            _ = try await client(stub).judge(state: mismatched, questions: [question])
+            XCTFail("expected invalidRequest")
+        } catch let error as JudgmentError {
+            guard case let .invalidRequest(message) = error else {
+                return XCTFail("expected invalidRequest, got \(error)")
+            }
+            XCTAssertTrue(message.contains("authority"), "The message must name the undeclared question.")
+        } catch {
+            XCTFail("expected JudgmentError")
+        }
+        XCTAssertTrue(stub.recordedRequests.isEmpty, "Nothing may leave the machine on a payload the redactor did not build.")
+    }
+
+    func testAStateRedactedForTheAskedQuestionsIsAccepted() async throws {
+        let stub = StubHTTPClient(responses: [.status(200, okBody)])
+        let generous = JudgmentState.forTesting(
+            questionIDs: ["authority", "unused.extra"],
+            fields: ["question": .text("Which database?")]
+        )
+
+        _ = try await client(stub).judge(state: generous, questions: [question])
+
+        XCTAssertEqual(stub.recordedRequests.count, 1, "A superset of the asked questions is fine; a missing one is not.")
+    }
+
     func testAnUndocumentedStatusIsReportedAsItself() async {
         let stub = StubHTTPClient(responses: [.status(503, Data())])
 

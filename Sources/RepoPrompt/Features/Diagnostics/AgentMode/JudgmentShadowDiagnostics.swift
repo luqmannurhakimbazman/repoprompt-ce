@@ -20,26 +20,52 @@ enum AskUserShadowOutcome: Sendable, Equatable {
 }
 
 extension AskUserShadowOutcome {
-    /// Whether every question that has a recommendation received it as the answer it
-    /// actually transmitted, or `nil` when no question in the interaction has a
-    /// recommendation to compare against — there is no comparison to make, so the record
-    /// should say nothing rather than claim a match or a mismatch it never checked.
+    /// Whether this one question's transmitted answer was its own recommended option, or
+    /// `nil` when it has no recommendation to compare against — there is no comparison to
+    /// make, so the record should say nothing rather than claim a match or a mismatch it
+    /// never checked.
     ///
-    /// Reads each question's transmitted answer through `AgentAskUserQuestion.answer(from:)`
-    /// rather than the raw draft, so a single-select answer that also carries custom text, or
-    /// a question the user skipped, is judged by what was actually sent rather than by a
+    /// Computed per question, not per interaction. Each record carries a judgment about
+    /// one question and `ask_user` accepts up to 10 of them, so an interaction-level
+    /// verdict stamped on every row would let one custom answer drag nine unrelated rows
+    /// to `false` and depress the gate for reasons that have nothing to do with
+    /// calibration.
+    ///
+    /// Reads the transmitted answer through `AgentAskUserQuestion.answer(from:)` rather
+    /// than the raw draft, so a single-select answer that also carries custom text, or a
+    /// question the user skipped, is judged by what was actually sent rather than by a
     /// leftover selection that was never sent. Does not reimplement `answer(from:)`'s
     /// precedence rules.
-    static func pickedRecommended(
-        for questions: [AgentAskUserQuestion],
-        draftsByQuestionID: [String: AgentAskUserDraft]
-    ) -> Bool? {
-        let withRecommendation = questions.filter { $0.recommendedOption != nil }
-        guard !withRecommendation.isEmpty else { return nil }
-        return withRecommendation.allSatisfy { question in
-            guard let recommended = question.recommendedOption?.label else { return false }
-            let draft = draftsByQuestionID[question.id] ?? AgentAskUserDraft()
-            return question.answer(from: draft).answers == [recommended]
+    static func pickedRecommended(for question: AgentAskUserQuestion, draft: AgentAskUserDraft?) -> Bool? {
+        guard let recommended = question.recommendedOption?.label else { return nil }
+        return question.answer(from: draft ?? AgentAskUserDraft()).answers == [recommended]
+    }
+}
+
+/// How an `ask_user` interaction ended, before it is resolved into one outcome per
+/// question.
+///
+/// The answered case carries the drafts rather than a single verdict, because the
+/// recorder needs each question's own draft to label that question's own row.
+enum AskUserShadowInteractionOutcome: Sendable, Equatable {
+    case answered(draftsByQuestionID: [String: AgentAskUserDraft])
+    case skipped
+    case expired(behavior: String)
+
+    /// The outcome to write on one question's row.
+    func resolved(for question: AgentAskUserQuestion) -> AskUserShadowOutcome {
+        switch self {
+        case let .answered(draftsByQuestionID):
+            .answered(
+                pickedRecommended: AskUserShadowOutcome.pickedRecommended(
+                    for: question,
+                    draft: draftsByQuestionID[question.id]
+                )
+            )
+        case .skipped:
+            .skipped
+        case let .expired(behavior):
+            .expired(behavior: behavior)
         }
     }
 }
@@ -78,17 +104,47 @@ final class JudgmentShadowRecorder {
         self.appendLine = appendLine
     }
 
+    /// Whether recording is on right now.
+    ///
+    /// Lets a caller skip the work that only exists to feed the recorder — the expiry
+    /// resolver checks it so the release path does not hop tasks for a feature that is
+    /// hard-`false` there.
+    var isRecordingEnabled: Bool {
+        isEnabled()
+    }
+
     /// Records every question of an interaction, without blocking the caller.
     ///
     /// Fire-and-forget on purpose: recording must not change what the caller returns or
-    /// when it returns it.
-    func record(interactionID: UUID, questions: [AgentAskUserQuestion], outcome: AskUserShadowOutcome) {
+    /// when it returns it. The interaction-level outcome is resolved into a per-question
+    /// outcome here, so each row's label describes the question that row is about.
+    func record(interactionID: UUID, questions: [AgentAskUserQuestion], outcome: AskUserShadowInteractionOutcome) {
         guard isEnabled() else { return }
         for question in questions {
+            let questionOutcome = outcome.resolved(for: question)
             Task { @MainActor [weak self] in
-                await self?.record(interactionID: interactionID, question: question, outcome: outcome)
+                await self?.record(interactionID: interactionID, question: question, outcome: questionOutcome)
             }
         }
+    }
+
+    /// Records the answered or skipped end of an interaction.
+    ///
+    /// Both answered funnels — `AgentModeViewModel.resolveAskUserResponse` and
+    /// `ContextBuilderAgentViewModel.resolveAskUserResponse` — call this one method, so
+    /// the mapping from "the user skipped every question" to an outcome is written once
+    /// and can be exercised without building a view model. This is the funnel that
+    /// carries the only ground-truth label, so it is the one that most needs a seam.
+    func recordResolved(
+        interaction: AgentAskUserInteraction,
+        draftsByQuestionID: [String: AgentAskUserDraft],
+        skipAll: Bool
+    ) {
+        record(
+            interactionID: interaction.id,
+            questions: interaction.questions,
+            outcome: skipAll ? .skipped : .answered(draftsByQuestionID: draftsByQuestionID)
+        )
     }
 
     /// Records one question and waits for it. The `questions:` overload above fans out
@@ -103,8 +159,13 @@ final class JudgmentShadowRecorder {
             "question_id": question.id,
             "option_count": question.options.count,
             "recommended_option": question.recommendedOption?.label ?? "",
+            // `recommendedOption` falls back to the first option when the agent flagged
+            // none, so an analyst cannot otherwise tell an explicit recommendation from a
+            // positional guess. The two may calibrate differently, so the record says which.
+            "recommended_option_is_flagged": question.options.contains(where: \.isRecommended),
             "outcome": outcome.label,
-            "judgment_available": judgment != nil
+            "judgment_available": judgment != nil,
+            "catalogue_version": JudgmentQuestionCatalogue.version
         ]
 
         switch outcome {
@@ -125,13 +186,33 @@ final class JudgmentShadowRecorder {
             record["answers"] = judgment.answersByQuestionID.mapValues(Self.recordBody(for:))
         }
 
+        guard let line = Self.line(for: record) else { return }
+        appendLine(line)
+    }
+
+    /// Serializes a record, retrying without `answers` if the first attempt fails.
+    ///
+    /// `answers` is the only part of a record built from server-supplied values, so it is
+    /// the only part that can carry something `JSONSerialization` rejects. Dropping the
+    /// whole row on that failure would also discard the human label, which is the one
+    /// field nobody can reconstruct afterwards, so the outcome row survives without the
+    /// judgment instead.
+    private static func line(for record: [String: Any]) -> String? {
+        if let line = serialize(record) { return line }
+        var withoutAnswers = record
+        withoutAnswers["answers"] = nil
+        withoutAnswers["answers_dropped"] = true
+        return serialize(withoutAnswers)
+    }
+
+    private static func serialize(_ record: [String: Any]) -> String? {
         guard JSONSerialization.isValidJSONObject(record),
               let data = try? JSONSerialization.data(withJSONObject: record, options: []),
               let line = String(data: data, encoding: .utf8)
         else {
-            return
+            return nil
         }
-        appendLine(line)
+        return line
     }
 
     /// The five fields a judgment may know about an `ask_user` question.
@@ -143,7 +224,11 @@ final class JudgmentShadowRecorder {
             questionText: question.question,
             context: question.context,
             optionLabels: question.options.map(\.label),
-            optionDescriptions: question.options.compactMap(\.description),
+            // Positional, not compacted: `compactMap` drops the entry for an option with
+            // no description and shifts every later description onto the wrong option.
+            // Descriptions are one of only five fields the rubric reads, so a shifted
+            // field degrades the judgments being calibrated.
+            optionDescriptions: question.options.map { $0.description ?? "" },
             recommendedOptionLabel: question.recommendedOption?.label
         )
     }

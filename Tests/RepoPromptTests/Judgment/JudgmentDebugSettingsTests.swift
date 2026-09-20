@@ -31,7 +31,10 @@ final class JudgmentDebugSettingsTests: XCTestCase {
         super.tearDown()
     }
 
-    func testShadowRecordingIsOffUntilSomeoneTurnsItOn() {
+    /// Reads back what `setUp` wrote. It pins that writing `false` is observable, not that
+    /// the setting defaults to off — `setUp` has already written the value by the time any
+    /// test runs, so nothing here can see the default.
+    func testWritingFalseIsReadBackAsFalse() {
         XCTAssertFalse(store.judgmentShadowEnabled())
     }
 
@@ -56,5 +59,47 @@ final class JudgmentDebugSettingsTests: XCTestCase {
         store.setJudgmentShadowLogFilePath("   ")
 
         XCTAssertEqual(store.judgmentShadowLogFilePath(), "")
+    }
+
+    // MARK: - The writer's resolved-URL cache
+
+    /// The writer caches its resolved file URL under `(override, dateStamp)`. This covers
+    /// the override axis: a mid-session settings edit must land the next line in the new
+    /// directory rather than reusing the cached URL.
+    ///
+    /// The date axis is not covered. It needs `Date()` injected into
+    /// `JudgmentShadowLogWriter`, which the writer does not offer, and a test cannot move
+    /// the clock across UTC midnight without it.
+    func testTheWriterFollowsAMidSessionDirectoryChange() throws {
+        let first = FileManager.default.temporaryDirectory
+            .appendingPathComponent("JudgmentShadowLogWriterTests-first-\(UUID().uuidString)", isDirectory: true)
+        let second = FileManager.default.temporaryDirectory
+            .appendingPathComponent("JudgmentShadowLogWriterTests-second-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: first)
+            try? FileManager.default.removeItem(at: second)
+        }
+        let writer = JudgmentShadowLogWriter()
+
+        store.setJudgmentShadowLogFilePath(first.path)
+        writer.append(#"{"marker":"first"}"#)
+        store.setJudgmentShadowLogFilePath(second.path)
+        writer.append(#"{"marker":"second"}"#)
+
+        XCTAssertEqual(try Self.appendedLines(in: first), [#"{"marker":"first"}"#])
+        XCTAssertEqual(
+            try Self.appendedLines(in: second),
+            [#"{"marker":"second"}"#],
+            "A cached URL that ignored the override change would have sent this line to the first directory."
+        )
+    }
+
+    private static func appendedLines(in directory: URL) throws -> [String] {
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
+        return try names.flatMap { name in
+            try String(contentsOf: directory.appendingPathComponent(name), encoding: .utf8)
+                .split(separator: "\n")
+                .map(String.init)
+        }
     }
 }

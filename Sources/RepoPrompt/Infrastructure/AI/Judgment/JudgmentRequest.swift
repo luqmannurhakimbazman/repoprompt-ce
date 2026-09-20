@@ -1,11 +1,13 @@
 import Foundation
 
+// Explicit `Sendable` conformances are intentional actor-boundary contracts.
+// swiftformat:disable redundantSendable
+
 /// The closed set of judgments the app may ask for.
 ///
 /// Consumers pass one of these rather than a `JudgmentState`, so the fields that can
 /// leave this machine are fixed by the type system instead of by review. Adding a field
 /// means editing this file and `JudgmentStateRedactor` together.
-// swiftformat:disable redundantSendable
 enum JudgmentRequest: Sendable, Equatable {
     case askUserExpiry(AskUserExpiryJudgmentInput)
 }
@@ -14,7 +16,6 @@ enum JudgmentRequest: Sendable, Equatable {
 ///
 /// Deliberately not the domain type: `AgentAskUserQuestion` and `AgentAskUserInteraction`
 /// carry identifiers, timestamps, and drafts that must not be sent anywhere.
-// swiftformat:disable redundantSendable
 struct AskUserExpiryJudgmentInput: Sendable, Equatable {
     let questionText: String
     let context: String?

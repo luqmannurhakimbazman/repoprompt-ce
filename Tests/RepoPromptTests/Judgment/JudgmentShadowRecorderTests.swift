@@ -73,6 +73,12 @@ final class JudgmentShadowRecorderTests: XCTestCase {
         XCTAssertEqual(record["model_version"] as? String, "jev-1.12")
         XCTAssertEqual(record["question_id"] as? String, "database")
         XCTAssertEqual(record["input_tokens"] as? Int, 260)
+        XCTAssertEqual(record["recommended_option_is_flagged"] as? Bool, true)
+        XCTAssertEqual(
+            record["catalogue_version"] as? String,
+            JudgmentQuestionCatalogue.version,
+            "Every row must name the rubric that produced it, or a revision is invisible in the data."
+        )
         let answers = try XCTUnwrap(record["answers"] as? [String: Any])
         let risk = try XCTUnwrap(answers["ask_user.recommended_option_risk"] as? [String: Any])
         XCTAssertEqual(risk["kind"] as? String, "score")
@@ -126,7 +132,11 @@ final class JudgmentShadowRecorderTests: XCTestCase {
 
         XCTAssertEqual(input.questionText, "Which database should we use?")
         XCTAssertEqual(input.optionLabels, ["SQLite", "Postgres"])
-        XCTAssertEqual(input.optionDescriptions, ["Server"])
+        XCTAssertEqual(
+            input.optionDescriptions,
+            ["", "Server"],
+            "Descriptions are positional. Compacting them would hand Postgres's description to SQLite."
+        )
         XCTAssertEqual(input.recommendedOptionLabel, "Postgres")
     }
 
@@ -178,39 +188,21 @@ final class JudgmentShadowRecorderTests: XCTestCase {
 
     // MARK: - AskUserShadowOutcome.pickedRecommended
 
-    func testPickedRecommendedIsTrueWhenEveryRecommendationBearingQuestionMatchesIt() {
+    func testPickedRecommendedIsTrueWhenTheQuestionsOwnAnswerMatchesItsRecommendation() {
         let picked = AskUserShadowOutcome.pickedRecommended(
-            for: [question, secondQuestion],
-            draftsByQuestionID: [
-                "database": AgentAskUserDraft(selectedOptionLabels: ["Postgres"]),
-                "cache": AgentAskUserDraft(selectedOptionLabels: ["Redis"])
-            ]
+            for: question,
+            draft: AgentAskUserDraft(selectedOptionLabels: ["Postgres"])
         )
 
         XCTAssertEqual(picked, true)
     }
 
-    func testPickedRecommendedIsNilWhenNoQuestionHasARecommendation() {
+    func testPickedRecommendedIsNilWhenTheQuestionHasNoRecommendation() {
         let noOptions = AgentAskUserQuestion(id: "notes", question: "Any extra constraints?", allowsCustom: true)
 
-        let picked = AskUserShadowOutcome.pickedRecommended(for: [noOptions], draftsByQuestionID: [:])
+        let picked = AskUserShadowOutcome.pickedRecommended(for: noOptions, draft: nil)
 
         XCTAssertNil(picked, "There is no recommendation to compare against, so the record should say nothing.")
-    }
-
-    func testPickedRecommendedIgnoresAQuestionWithNoOptionsRatherThanFailingTheWholeInteraction() {
-        let noOptions = AgentAskUserQuestion(id: "notes", question: "Any extra constraints?", allowsCustom: true)
-
-        let picked = AskUserShadowOutcome.pickedRecommended(
-            for: [question, noOptions],
-            draftsByQuestionID: ["database": AgentAskUserDraft(selectedOptionLabels: ["Postgres"])]
-        )
-
-        XCTAssertEqual(
-            picked,
-            true,
-            "A question with no options has no recommendation and must not drag a matching interaction to false."
-        )
     }
 
     func testPickedRecommendedReadsTheTransmittedAnswerNotTheStaleSelectionOnACustomOverride() {
@@ -219,7 +211,7 @@ final class JudgmentShadowRecorderTests: XCTestCase {
         // leftover selection.
         let draft = AgentAskUserDraft(selectedOptionLabels: ["Postgres"], customResponse: "MySQL")
 
-        let picked = AskUserShadowOutcome.pickedRecommended(for: [question], draftsByQuestionID: ["database": draft])
+        let picked = AskUserShadowOutcome.pickedRecommended(for: question, draft: draft)
 
         XCTAssertEqual(
             picked,
@@ -231,13 +223,159 @@ final class JudgmentShadowRecorderTests: XCTestCase {
     func testPickedRecommendedReadsTheTransmittedAnswerNotTheStaleSelectionOnASkip() {
         let draft = AgentAskUserDraft(selectedOptionLabels: ["Postgres"], skipped: true)
 
-        let picked = AskUserShadowOutcome.pickedRecommended(for: [question], draftsByQuestionID: ["database": draft])
+        let picked = AskUserShadowOutcome.pickedRecommended(for: question, draft: draft)
 
         XCTAssertEqual(
             picked,
             false,
             "A skipped question transmits no answer, whatever selection is still sitting in the draft."
         )
+    }
+
+    // MARK: - The answered funnel
+
+    /// `ask_user` accepts up to 10 questions and every row carries a judgment about one of
+    /// them. An interaction-level label stamped on every row would let one custom answer
+    /// drag every sibling row to `false` and depress gate 1 for reasons unrelated to
+    /// calibration, so each row must be labelled from its own question's draft.
+    func testTheAnsweredFunnelLabelsEachRowFromItsOwnQuestion() async {
+        let lines = LineSink()
+        let recorded = expectation(description: "records every question")
+        recorded.expectedFulfillmentCount = 2
+        let result = judgedResult
+        let recorder = JudgmentShadowRecorder(
+            policy: JudgmentPolicy(judgeFactory: { StubSystemOneJudge(result: .success(result)) }),
+            isEnabled: { true },
+            appendLine: { line in
+                lines.append(line)
+                recorded.fulfill()
+            }
+        )
+        let interaction = AgentAskUserInteraction(
+            title: "Question",
+            timeoutSeconds: 30,
+            questions: [question, secondQuestion]
+        )
+
+        recorder.recordResolved(
+            interaction: interaction,
+            draftsByQuestionID: [
+                // The user took the recommendation on one question and typed their own
+                // answer on the other.
+                "database": AgentAskUserDraft(selectedOptionLabels: ["Postgres"]),
+                "cache": AgentAskUserDraft(customResponse: "Memcached")
+            ],
+            skipAll: false
+        )
+        await fulfillment(of: [recorded], timeout: 5)
+
+        let byQuestion = Dictionary(
+            uniqueKeysWithValues: lines.decodedRecords.compactMap { record -> (String, [String: Any])? in
+                guard let id = record["question_id"] as? String else { return nil }
+                return (id, record)
+            }
+        )
+        XCTAssertEqual(Set(byQuestion.keys), ["database", "cache"], "One row per question.")
+        XCTAssertEqual(byQuestion["database"]?["outcome"] as? String, "answered")
+        XCTAssertEqual(
+            byQuestion["database"]?["picked_recommended"] as? Bool,
+            true,
+            "The answered question kept its own true label despite its sibling disagreeing."
+        )
+        XCTAssertEqual(byQuestion["cache"]?["picked_recommended"] as? Bool, false)
+        withExtendedLifetime(recorder) {}
+    }
+
+    func testTheAnsweredFunnelOmitsTheLabelOnAQuestionWithNoRecommendation() async throws {
+        let lines = LineSink()
+        let recorded = expectation(description: "records the question")
+        let result = judgedResult
+        let recorder = JudgmentShadowRecorder(
+            policy: JudgmentPolicy(judgeFactory: { StubSystemOneJudge(result: .success(result)) }),
+            isEnabled: { true },
+            appendLine: { line in
+                lines.append(line)
+                recorded.fulfill()
+            }
+        )
+        let noOptions = AgentAskUserQuestion(id: "notes", question: "Any extra constraints?", allowsCustom: true)
+        let interaction = AgentAskUserInteraction(title: "Question", timeoutSeconds: 30, questions: [noOptions])
+
+        recorder.recordResolved(
+            interaction: interaction,
+            draftsByQuestionID: ["notes": AgentAskUserDraft(customResponse: "None")],
+            skipAll: false
+        )
+        await fulfillment(of: [recorded], timeout: 5)
+
+        let record = try XCTUnwrap(lines.decodedRecords.first)
+        XCTAssertEqual(record["outcome"] as? String, "answered")
+        XCTAssertNil(record["picked_recommended"], "No recommendation means no comparison to report.")
+        XCTAssertEqual(record["recommended_option_is_flagged"] as? Bool, false)
+        withExtendedLifetime(recorder) {}
+    }
+
+    func testTheAnsweredFunnelRecordsASkipAllAsSkipped() async {
+        let lines = LineSink()
+        let recorded = expectation(description: "records every question")
+        recorded.expectedFulfillmentCount = 2
+        let result = judgedResult
+        let recorder = JudgmentShadowRecorder(
+            policy: JudgmentPolicy(judgeFactory: { StubSystemOneJudge(result: .success(result)) }),
+            isEnabled: { true },
+            appendLine: { line in
+                lines.append(line)
+                recorded.fulfill()
+            }
+        )
+        let interaction = AgentAskUserInteraction(
+            title: "Question",
+            timeoutSeconds: 30,
+            questions: [question, secondQuestion]
+        )
+
+        recorder.recordResolved(
+            interaction: interaction,
+            draftsByQuestionID: ["database": AgentAskUserDraft(selectedOptionLabels: ["Postgres"])],
+            skipAll: true
+        )
+        await fulfillment(of: [recorded], timeout: 5)
+
+        XCTAssertEqual(lines.decodedRecords.count, 2)
+        XCTAssertTrue(lines.decodedRecords.allSatisfy { $0["outcome"] as? String == "skipped" })
+        XCTAssertTrue(
+            lines.decodedRecords.allSatisfy { $0["picked_recommended"] == nil },
+            "A skip-all transmits no answer, so no row may claim the person picked anything."
+        )
+        withExtendedLifetime(recorder) {}
+    }
+
+    // MARK: - Serialization
+
+    func testAnUnserializableJudgmentStillLeavesTheOutcomeRowBehind() async throws {
+        let lines = LineSink()
+        // `Double.nan` is not representable in JSON, so the first serialization attempt
+        // fails. The human label is the one field nobody can reconstruct later, so the row
+        // must survive without the judgment rather than disappearing with it.
+        let unserializable = JudgmentResult(
+            modelVersion: "jev-1.12",
+            answersByQuestionID: ["ask_user.needs_human_authority": .noul(probability: .nan)],
+            usage: JudgmentUsage(inputTokens: 1, outputTokens: 0),
+            latencySeconds: 0.1
+        )
+        let recorder = recorder(enabled: true, result: unserializable, lines: lines)
+
+        await recorder.record(
+            interactionID: UUID(),
+            question: question,
+            outcome: .answered(pickedRecommended: false)
+        )
+
+        let record = try XCTUnwrap(lines.decodedRecords.first)
+        XCTAssertEqual(record["picked_recommended"] as? Bool, false)
+        XCTAssertEqual(record["judgment_available"] as? Bool, true)
+        XCTAssertEqual(record["answers_dropped"] as? Bool, true)
+        XCTAssertNil(record["answers"])
     }
 
     // MARK: - Doubles

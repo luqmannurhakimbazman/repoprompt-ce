@@ -1,5 +1,8 @@
 import Foundation
 
+// Explicit `Sendable` conformances are intentional actor-boundary contracts.
+// swiftformat:disable redundantSendable
+
 /// The redacted payload sent as the request's `state`.
 ///
 /// This initialiser is `fileprivate`, so `JudgmentStateRedactor.plan(for:)` below is the
@@ -7,7 +10,6 @@ import Foundation
 /// instead, so no call site anywhere else in the app can add a field that the catalogue
 /// did not declare. The `forTesting` factory is the single exception, and it exists only
 /// in DEBUG builds.
-// swiftformat:disable redundantSendable
 struct JudgmentState: Sendable, Equatable {
     /// The catalogue entries this payload was built for.
     let questionIDs: [String]
@@ -37,7 +39,6 @@ struct JudgmentState: Sendable, Equatable {
 #endif
 
 /// A request turned into the exact questions and payload to send.
-// swiftformat:disable redundantSendable
 struct JudgmentPlan: Sendable, Equatable {
     let questions: [JudgmentQuestion]
     let state: JudgmentState

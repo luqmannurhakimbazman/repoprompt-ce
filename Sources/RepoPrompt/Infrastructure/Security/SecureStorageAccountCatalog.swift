@@ -21,6 +21,12 @@ enum SecureStorageAccount: CaseIterable, Hashable, Identifiable {
     case openCodeCLIAPI
     case cursorCLIAPI
     case zAIAPI
+
+    /// Judgment seam account. Not a provider and not a CLI: it is deliberately absent from
+    /// `providerAndCLIAccounts`, from `AIProviderType`, and from every model catalogue, and
+    /// the DEBUG-only `judgment.api_key` setting is its only writer. Its position in this
+    /// enum is frozen by `SecureStorageAccountCatalogTests`, so it stays here rather than
+    /// moving below.
     case typeSafeSystemOneAPI
 
     // Claude-compatible backend accounts.

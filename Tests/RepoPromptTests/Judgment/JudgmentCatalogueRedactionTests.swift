@@ -56,6 +56,68 @@ final class JudgmentCatalogueRedactionTests: XCTestCase {
         XCTAssertEqual(Set(ids).count, ids.count, "Two entries sharing an id would collide in the answers map.")
     }
 
+    /// Mirrors `JudgmentRequest`'s cases. Adding a case there stops `tag(for:)` below from
+    /// compiling until this list grows too, and the coverage assertion then fails until
+    /// `everyRequest` grows as well. That chain is what makes the drift guard real.
+    private enum RequestCase: CaseIterable {
+        case askUserExpiry
+    }
+
+    private func tag(for request: JudgmentRequest) -> RequestCase {
+        switch request {
+        case .askUserExpiry: .askUserExpiry
+        }
+    }
+
+    func testAllQuestionsContainsEveryQuestionAnyRequestCanAsk() {
+        let everyRequest: [JudgmentRequest] = [.askUserExpiry(input)]
+
+        XCTAssertEqual(
+            Set(everyRequest.map(tag(for:))),
+            Set(RequestCase.allCases),
+            "Add the new JudgmentRequest case to everyRequest before this assertion means anything."
+        )
+
+        let asked = Set(everyRequest.flatMap { JudgmentQuestionCatalogue.questions(for: $0) }.map(\.id))
+        let declared = Set(JudgmentQuestionCatalogue.allQuestions.map(\.id))
+
+        XCTAssertTrue(
+            asked.isSubset(of: declared),
+            "allQuestions is hand-maintained beside questions(for:). Missing from allQuestions: \(asked.subtracting(declared).sorted())."
+        )
+    }
+
+    // MARK: - Catalogue version
+
+    func testTheCatalogueVersionIsAStableFingerprintOfTheRubrics() {
+        let version = JudgmentQuestionCatalogue.version
+
+        XCTAssertEqual(version.count, 16)
+        XCTAssertEqual(version, JudgmentQuestionCatalogue.version, "The fingerprint must not change between reads.")
+        XCTAssertNotEqual(version, "unhashable")
+        XCTAssertTrue(version.allSatisfy(\.isHexDigit))
+    }
+
+    func testTheCatalogueVersionTracksRubricWordingRatherThanIdentity() {
+        let original = JudgmentQuestionCatalogue.askUserNeedsHumanAuthority
+        let reworded = JudgmentQuestion(
+            id: original.id,
+            instructions: original.instructions + " Answer carefully.",
+            kind: original.kind
+        )
+
+        XCTAssertNotEqual(
+            JudgmentQuestionCatalogue.fingerprint(of: [original]),
+            JudgmentQuestionCatalogue.fingerprint(of: [reworded]),
+            "A revision must be visible in the data, because it resets the calibration sample."
+        )
+        XCTAssertEqual(
+            JudgmentQuestionCatalogue.fingerprint(of: [original]),
+            JudgmentQuestionCatalogue.fingerprint(of: [original]),
+            "The same wording must always fingerprint the same way."
+        )
+    }
+
     // MARK: - Redaction
 
     func testThePayloadCarriesExactlyTheDeclaredFields() {

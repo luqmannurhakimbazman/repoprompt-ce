@@ -61,6 +61,16 @@ struct JevJudgmentClient: SystemOneJudging {
         guard let url = URL(string: endpointURLString) else {
             throw JudgmentError.invalidRequest("endpoint is not a URL: \(endpointURLString)")
         }
+        // `JudgmentState.questionIDs` records which catalogue entries the redactor built
+        // this payload for. Checking it here is what makes that field load-bearing: a
+        // payload redacted for one question set can never be sent with another, so the
+        // allow-list is enforced at encode time rather than only at redaction time.
+        let declared = Set(state.questionIDs)
+        let asked = Set(questions.map(\.id))
+        guard asked.isSubset(of: declared) else {
+            let undeclared = asked.subtracting(declared).sorted().joined(separator: ", ")
+            throw JudgmentError.invalidRequest("state was not redacted for: \(undeclared)")
+        }
         var questionBodies: [String: Any] = [:]
         for question in questions {
             questionBodies[question.id] = question.wireBody
@@ -104,7 +114,7 @@ struct JevJudgmentClient: SystemOneJudging {
         case 401:
             throw JudgmentError.unauthorized
         case 422:
-            throw JudgmentError.invalidRequest(String(data: response.data.prefix(512), encoding: .utf8) ?? "")
+            throw JudgmentError.invalidRequest(Self.truncatedMessage(from: response.data))
         case 429:
             throw JudgmentError.rateLimited
         case 529:
@@ -114,9 +124,19 @@ struct JevJudgmentClient: SystemOneJudging {
         }
     }
 
+    /// The server's explanation, decoded before it is shortened.
+    ///
+    /// Truncating the `Data` first would split a multi-byte UTF-8 sequence and collapse
+    /// the whole message to empty, losing the only account of why the request was
+    /// rejected. Decoding first makes the cut fall on characters instead.
+    private static func truncatedMessage(from data: Data, limit: Int = 512) -> String {
+        let message = String(decoding: data, as: UTF8.self)
+        return message.count <= limit ? message : String(message.prefix(limit))
+    }
+
     // MARK: - Response
 
-    static func parse(data: Data, questions: [JudgmentQuestion], latencySeconds: Double) throws -> JudgmentResult {
+    private static func parse(data: Data, questions: [JudgmentQuestion], latencySeconds: Double) throws -> JudgmentResult {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw JudgmentError.malformedResponse("response is not a JSON object")
         }
@@ -197,7 +217,7 @@ struct JevJudgmentClient: SystemOneJudging {
 
     // MARK: - Retry and deadline
 
-    static func isRetryable(_ error: JudgmentError) -> Bool {
+    private static func isRetryable(_ error: JudgmentError) -> Bool {
         switch error {
         case .rateLimited, .overloaded:
             true

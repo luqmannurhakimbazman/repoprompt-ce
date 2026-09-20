@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Every question the app may ask a System One model, declared once.
@@ -42,6 +43,33 @@ enum JudgmentQuestionCatalogue {
         askUserRecommendedOptionRisk,
         askUserNeedsHumanAuthority
     ]
+
+    /// A fingerprint of every declared question's exact wire body.
+    ///
+    /// Written on every shadow record as `catalogue_version`. Rubric wording is the real
+    /// interface to this model and a revision resets the calibration sample, so the
+    /// revision has to be visible in the data rather than remembered: two records with
+    /// different values here were judged against different rubrics and must not be pooled.
+    ///
+    /// Computed once, from the serialized bodies rather than the Swift source, so a
+    /// comment or a rename changes nothing and a single character of rubric text changes
+    /// everything.
+    static let version: String = fingerprint(of: allQuestions)
+
+    /// The fingerprint of a question list, exposed so a test can show that rewording a
+    /// rubric changes it and that identical wording does not.
+    static func fingerprint(of questions: [JudgmentQuestion]) -> String {
+        let bodies = questions.map { question -> [String: Any] in
+            ["id": question.id, "body": question.wireBody]
+        }
+        guard JSONSerialization.isValidJSONObject(bodies),
+              let data = try? JSONSerialization.data(withJSONObject: bodies, options: [.sortedKeys])
+        else {
+            return "unhashable"
+        }
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        return String(digest.prefix(16))
+    }
 
     /// The questions one request asks.
     ///
