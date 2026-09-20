@@ -130,8 +130,38 @@ Safe band, as proposed by the spec: `needs_human_authority` at or below 0.15, an
 | --- | --- | --- |
 | Human-answered interactions overall | | at least 100 |
 | Human-answered records overall | | reported, no floor |
-| Of those records, ones falling in the safe band | | reported, no floor |
-| Of those, the human picked the recommended option | | at least 90% |
+| Of those records, ones falling in the safe band | | at least 50 |
+| Distinct interactions those safe-band records come from | | at least 30 |
+| Of those records, the human picked the recommended option | | reported |
+| **Wilson 95% lower bound on that rate** | | **at least 80%** |
+
+**The lower bound is the gate, not the rate.** A point estimate with no floor under it can
+pass on almost nothing: 27 of 30 reads as 90% and is consistent with a true rate of 74.4%.
+Under substitution that is the difference between a trustworthy filter and one that is
+wrong on roughly one unattended action in four. What the bound demands in practice:
+
+| Safe-band records | Needed to pass | Point estimate that implies |
+| --- | --- | --- |
+| 50 | 46/50 | 92% |
+| 75 | 68/75 | 90.7% |
+| 100 | 90/100 | 90% |
+| 150 | 135/150 | 90% |
+
+So the familiar 90% is the right target, and at a small sample you must beat it to prove
+you have reached it. The requirement is self-enforcing: a thin sample cannot clear the bound
+however clean it looks, which is why no separate floor is doing the statistical work. The
+50-record and 30-interaction floors are there for coverage — a sample drawn from one
+afternoon on one task is not a sample of the workload, whatever its arithmetic says.
+
+Compute the bound with the Wilson score interval at z = 1.96, not the normal approximation,
+which misbehaves near the ends and at small n.
+
+**The bound is optimistic and deliberately set below the target to absorb that.** Wilson
+assumes independent observations. Records are clustered inside interactions — one `ask_user`
+can carry ten questions, answered by one person in one frame of mind — so the true interval
+is wider than the computed one. The 30-interaction floor bounds how concentrated the sample
+can be, and the gap between the 80% bound and the 90% target is the margin for the rest. If
+a sample turns out heavily clustered, report the per-interaction rate as well and prefer it.
 
 **A skip counts as a disagreement.** Skipped records stay in the denominator and count
 against the rate. A skip is a person declining to choose, and slice 2 would substitute the
@@ -242,7 +272,11 @@ and nothing should until there is evidence that the fixed rubrics work at all.
 
 ## Verdict
 
-- [ ] All three gates hold. Slice 2 may be brainstormed, with thresholds taken from the
-  distributions above rather than from the spec's initial proposal.
+- [ ] All three gates hold. Slice 2 may be brainstormed.
+
+  Evaluate the band exactly as pre-registered above. Thresholds refitted to the same data
+  that is supposed to validate them are not a pass — they are a hypothesis for a second
+  collection window. If the distributions suggest better boundaries, say so here and collect
+  again against them; do not move the boundary and re-read the same sample.
 - [ ] A gate failed. Delete `Infrastructure/AI/Judgment`, the recorder, the settings keys,
   and the four wiring edits, and record the measured numbers above as the reason.

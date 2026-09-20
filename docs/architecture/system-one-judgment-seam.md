@@ -312,15 +312,24 @@ Slice 1 is finished when the recorder has collected **at least 100 human-answere
 a report states all three numbers. The floor is counted in interactions, not records: the recorder
 writes one record per question and `ask_user` accepts up to 10 questions per interaction, so records
 are clustered within an interaction and 100 records can be far less evidence than 100 interactions.
-The report states the record count alongside the interaction count, with no floor of its own.
+The report states the record count alongside the interaction count. Overall records carry no floor;
+safe-band records do, because that is the subset gate 1 is computed over — at least 50 of them, from
+at least 30 distinct interactions, which also bounds how concentrated the clustering can be.
 
 Slice 2 proceeds only if all three gates hold:
 
-1. Among questions the rubric judges safe to auto-answer, the person picked the recommended option
-   in at least 90% of cases. The safe band for this measurement is the initial proposal
-   `needs_human_authority` at or below 0.15, and `recommended_option_risk` at or below 1.0 with score
-   confidence at or above 0.7. These three numbers exist to make the gate measurable, not because
-   they are known to be right; slice 2 may move them anywhere the report's distribution supports.
+1. Among questions the rubric judges safe to auto-answer, the **Wilson 95% lower bound** on the rate
+   at which the person picked the recommended option is at least 80%, over at least 50 safe-band
+   records drawn from at least 30 distinct interactions. The bound is the gate rather than the rate,
+   because a bare point estimate can pass on almost nothing: 27 of 30 reads as 90% and is consistent
+   with a true rate near 74%. In practice the bound asks for 46/50, or 90% once there are 75 records.
+
+   The safe band for this measurement is the initial proposal `needs_human_authority` at or below
+   0.15, and `recommended_option_risk` at or below 1.0 with score confidence at or above 0.7. These
+   three numbers exist to make the gate measurable, not because they are known to be right; slice 2
+   may move them anywhere the report's distribution supports. Evaluate the band as pre-registered —
+   a band refitted to the data that validates it is a hypothesis for a second collection window, not
+   a pass.
 
    **A skip counts as a disagreement**, in the denominator and against the rate. A skip is a person
    declining to choose, and slice 2 would substitute the recommended option in exactly that case, so
