@@ -9,10 +9,39 @@ three gates hold. If they do not, the seam is deleted and the measured result st
 ## How to turn this on
 
 Shadow recording is DEBUG-only and inert until you both store a key and switch it on. Run
-these against the running CE debug app:
+these against the running CE debug app.
+
+You need a debug app first. If packaging stops on a certificate error fetching the pinned
+Codex runtime, the python.org Python's trust store is empty and `urllib` cannot verify
+github.com — `curl` working is not evidence against this. Prime the cache once with the
+system bundle, then build:
 
 ```bash
-rpce-cli-debug -w 1 -c app_settings -j '{"op":"set","key":"judgment.api_key","value":"<TypeSafe System One key>"}'
+SSL_CERT_FILE=/etc/ssl/cert.pem python3 Scripts/codex_runtime_artifact.py \
+  --manifest Vendor/Codex/manifest.json acquire --arch host --cache-root .build/codex-runtime
+ALLOW_ADHOC_SIGNING=1 make dev-run
+```
+
+An ad-hoc build uses ephemeral in-memory secure storage, so the key does not survive a
+relaunch. That is fine for a single session; multi-day collection needs a build with an
+explicit `SIGN_IDENTITY="Apple Development: ..."`.
+
+Store the key through stdin, not as an argument. A key on a command line lands in shell
+history and is readable by any local process through `ps` for as long as the call runs.
+`-j @-` reads the JSON payload from stdin, so the key goes from a file straight into the
+CLI:
+
+```bash
+# key file: one line, mode 0600, outside the repository
+python3 -c 'import json,os,sys
+key = open(os.path.expanduser("~/.config/typesafe/system-one-key")).read().strip()
+print(json.dumps({"op": "set", "key": "judgment.api_key", "value": key}))' \
+  | rpce-cli-debug -w 1 -c app_settings -j @-
+```
+
+Then the rest, none of which carries a secret:
+
+```bash
 rpce-cli-debug -w 1 -c app_settings -j '{"op":"set","key":"judgment.shadow_enabled","value":true}'
 # optional: choose where the JSONL lands. Empty clears the override and records go to a
 # non-workspace temp debug directory.
@@ -33,6 +62,22 @@ ephemeral in-memory secure storage unless you build with an explicit
 the key when the app stops. Either build with an explicit `SIGN_IDENTITY` for a collection
 run, or re-set `judgment.api_key` after every launch.
 
+## What each state does
+
+Verified against the running debug app on 2026-09-20, one real `ask_user` interaction per
+row. "Off" wins over a stored key.
+
+| State | Network | JSONL |
+| --- | --- | --- |
+| Recording off | none | nothing, whether or not a key is stored |
+| Recording on, no key | none | one row per question, `judgment_available:false`, no `answers` |
+| Recording on, key stored | one call per question | one row per question, with the judgment |
+| Release build | none | nothing |
+
+Rows without a judgment are outside all three gates. They count only toward availability,
+and they are the only thing that distinguishes "recording is off" (no file) from "recording
+is on but the key is missing or rejected" (rows without `answers`).
+
 ## Sample
 
 | Field | Value |
@@ -47,8 +92,25 @@ run, or re-set `judgment.api_key` after every launch.
 | First record | |
 | Last record | |
 | Total input tokens | |
+| Total output tokens | |
 | Total cost | |
 | Median judgment latency | |
+| Judgment availability (rows with `judgment_available:true` / all rows) | |
+| Records whose `recommended_option_is_flagged` is false | |
+
+Compute cost from both token totals against dated, model-specific prices; write
+"unavailable" rather than a guess if no price is on hand.
+
+**Precondition, not a gate:** if judgment availability is below 90%, slice 2 is moot
+whatever the calibration says, because most interactions would produce no judgment to act
+on. Investigate before reading the gates.
+
+**Watch the flagged count.** Every interaction observed during validation had
+`recommended_option_is_flagged: false` — the agents raising `ask_user` did not mark any
+option recommended, so `recommended_option` fell back to the first option. Gate 1 measures
+agreement against a positional guess in those rows. Decide before collecting whether
+unflagged rows belong in the gate; if they dominate the sample, the gate is measuring
+something other than what it claims.
 
 Every record carries `catalogue_version`, a fingerprint of the exact wire bodies of every
 catalogue entry. More than one value in the table above means the rubric was revised during
