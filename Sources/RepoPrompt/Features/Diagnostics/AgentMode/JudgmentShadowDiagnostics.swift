@@ -289,8 +289,15 @@ final class JudgmentShadowRecorder {
 final class JudgmentShadowLogWriter {
     static let shared = JudgmentShadowLogWriter()
 
+    private let now: @MainActor () -> Date
     private var resolvedFileURL: URL?
     private var resolvedCacheKey: String?
+
+    /// The clock is injected so a test can cross UTC midnight. Nothing in the app passes
+    /// one; `shared` and every other caller take the default.
+    init(now: @escaping @MainActor () -> Date = { Date() }) {
+        self.now = now
+    }
 
     func append(_ line: String) {
         #if DEBUG
@@ -318,7 +325,7 @@ final class JudgmentShadowLogWriter {
         /// fresh URL instead of reusing an unconditionally cached one.
         private func fileURL() -> URL? {
             let override = GlobalSettingsStore.shared.judgmentShadowLogFilePath()
-            let dateStamp = Self.dateStampFormatter.string(from: Date())
+            let dateStamp = Self.dateStampFormatter.string(from: now())
             let cacheKey = "\(override)|\(dateStamp)"
             if let resolvedFileURL, resolvedCacheKey == cacheKey {
                 return resolvedFileURL

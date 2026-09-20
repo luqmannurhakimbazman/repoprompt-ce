@@ -93,9 +93,16 @@ final class JudgmentCatalogueRedactionTests: XCTestCase {
         let version = JudgmentQuestionCatalogue.version
 
         XCTAssertEqual(version.count, 16)
-        XCTAssertEqual(version, JudgmentQuestionCatalogue.version, "The fingerprint must not change between reads.")
         XCTAssertNotEqual(version, "unhashable")
         XCTAssertTrue(version.allSatisfy(\.isHexDigit))
+        // Recomputed from the same questions rather than read twice. Comparing the stored
+        // property with itself cannot fail, so it said nothing about what the fingerprint
+        // is derived from — which is the property the calibration sample depends on.
+        XCTAssertEqual(
+            version,
+            JudgmentQuestionCatalogue.fingerprint(of: JudgmentQuestionCatalogue.allQuestions),
+            "The published version must be the fingerprint of the declared questions."
+        )
     }
 
     func testTheCatalogueVersionTracksRubricWordingRatherThanIdentity() {
