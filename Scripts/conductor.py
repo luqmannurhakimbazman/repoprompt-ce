@@ -75,6 +75,9 @@ BUILD_CACHE_ENV_KEYS = (
     "ONLY_ACTIVE_ARCH",
     "OTHER_SWIFT_FLAGS",
     "REPOPROMPT_ENABLE_SENTRY",
+    # Changes the compiled feature set, so it must take part in the cache key: a build
+    # cached without it must never be reused for a build that asked for it.
+    "REPOPROMPT_JUDGMENT_SHADOW",
     "SDKROOT",
     "SWIFT_EXEC",
     "SWIFTFLAGS",
@@ -3125,6 +3128,7 @@ class OperationRegistry:
         "REPOPROMPT_DEV_BUILD_CACHE_DIR",
         "REPOPROMPT_DEV_BUILD_CACHE_DISABLE",
         "REPOPROMPT_DEV_BUILD_CACHE_LIMIT_BYTES",
+        "REPOPROMPT_JUDGMENT_SHADOW",
     ]
     TELEMETRY_ENV_KEYS = [
         "REPOPROMPT_ENABLE_SENTRY",
