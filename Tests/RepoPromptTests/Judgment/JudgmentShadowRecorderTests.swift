@@ -232,6 +232,38 @@ final class JudgmentShadowRecorderTests: XCTestCase {
         XCTAssertNil(picked, "There is no recommendation to compare against, so the record should say nothing.")
     }
 
+    func testPickedRecommendedIsNilWhenTheQuestionHasNoDraftAtAll() {
+        // Deliberately different from the explicit skip below, which stays `false`. A skip
+        // is a person declining to choose, and slice 2 would substitute the recommended
+        // option in exactly that case, so it is a real disagreement. No draft at all is not
+        // a decision: substituting an empty draft and reporting `false` would claim a
+        // comparison that never happened.
+        //
+        // The answered funnel cannot reach this. `buildSubmittedResponse` runs with
+        // `requireComplete: true` and throws `incompleteQuestion` for a question with
+        // neither an answer nor a skip, and it throws before `recordResolved` is called, so
+        // an interaction with a missing draft is never recorded as answered at all. This is
+        // a guard on an unreachable state, not a live path.
+        let picked = AskUserShadowOutcome.pickedRecommended(for: question, draft: nil)
+
+        XCTAssertNil(picked, "No draft means no comparison was made, which is not the same as disagreeing.")
+    }
+
+    func testAnAnsweredOutcomeWithNoDraftForTheQuestionOmitsPickedRecommended() async throws {
+        let lines = LineSink()
+        let recorder = recorder(enabled: true, result: judgedResult, lines: lines)
+
+        await recorder.record(
+            interactionID: UUID(uuidString: "44444444-4444-4444-4444-444444444444") ?? UUID(),
+            question: question,
+            outcome: AskUserShadowInteractionOutcome.answered(draftsByQuestionID: [:]).resolved(for: question)
+        )
+
+        let record = try XCTUnwrap(lines.decodedRecords.first)
+        XCTAssertEqual(record["outcome"] as? String, "answered")
+        XCTAssertNil(record["picked_recommended"], "A row with no label must carry no label, not a false one.")
+    }
+
     func testPickedRecommendedReadsTheTransmittedAnswerNotTheStaleSelectionOnACustomOverride() {
         // Single-select: choosing an option and then typing custom text means the custom
         // text is what gets transmitted (see `AgentAskUserQuestion.answer(from:)`), not the

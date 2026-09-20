@@ -36,9 +36,22 @@ extension AskUserShadowOutcome {
     /// question the user skipped, is judged by what was actually sent rather than by a
     /// leftover selection that was never sent. Does not reimplement `answer(from:)`'s
     /// precedence rules.
+    ///
+    /// A question with no draft at all also yields `nil`, and that is not the same as the
+    /// skip case. A skip is a person declining to choose, and slice 2 would substitute the
+    /// recommended option in exactly that case, so a skip is a genuine disagreement and
+    /// stays `false`. A missing draft is not a decision, and substituting an empty one to
+    /// report `false` would claim a comparison that never happened.
+    ///
+    /// The answered funnel cannot reach the missing-draft case:
+    /// `AgentAskUserInteraction.buildSubmittedResponse` runs with `requireComplete: true`
+    /// and throws `incompleteQuestion` for a question carrying neither an answer nor a
+    /// skip, and it throws before `recordResolved` runs — so an interaction with a missing
+    /// draft is never recorded as answered. This is a guard on an unreachable state, kept
+    /// because the reachability argument lives in a different file and could change there.
     static func pickedRecommended(for question: AgentAskUserQuestion, draft: AgentAskUserDraft?) -> Bool? {
-        guard let recommended = question.recommendedOption?.label else { return nil }
-        return question.answer(from: draft ?? AgentAskUserDraft()).answers == [recommended]
+        guard let recommended = question.recommendedOption?.label, let draft else { return nil }
+        return question.answer(from: draft).answers == [recommended]
     }
 }
 

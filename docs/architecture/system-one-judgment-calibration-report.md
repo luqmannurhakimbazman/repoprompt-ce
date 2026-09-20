@@ -74,8 +74,22 @@ act. Excluding skips would inflate agreement on the questions people found least
 answerable.
 
 `picked_recommended` is per question, computed from that question's own draft. A row is
-absent that field when its question carried no recommendation to compare against; those
-rows are outside gate 1 entirely.
+absent that field when no comparison was made: either the question carried no
+recommendation to compare against, or it had no draft at all. Those rows are outside gate 1
+entirely.
+
+`picked_recommended: false` means the answer that was transmitted for that question was not
+its recommended option. That covers two cases, and the gate counts them the same way: the
+person chose a different option, or the person skipped the question. A skip counts as
+disagreement because slice 2 would have substituted the recommended option in exactly that
+case. The data does not currently distinguish the two, so a reader cannot tell an active
+rejection from a declined question; add a field if that distinction ever becomes a gate
+input.
+
+The second absent case — a question with no draft — cannot arise from the answered funnel.
+`AgentAskUserInteraction.buildSubmittedResponse` runs with `requireComplete: true` and
+rejects an interaction carrying a question with neither an answer nor a skip, before any row
+is recorded.
 
 ## Gate 2: the confidence signal carries information
 
