@@ -183,6 +183,9 @@ final class JudgmentShadowRecorder {
             record["model_version"] = judgment.modelVersion
             record["latency_seconds"] = judgment.latencySeconds
             record["input_tokens"] = judgment.usage.inputTokens
+            // Both token counts, because the calibration report's cost row needs both and
+            // an analyst cannot recover the output count from anything else in the row.
+            record["output_tokens"] = judgment.usage.outputTokens
             record["answers"] = judgment.answersByQuestionID.mapValues(Self.recordBody(for:))
         }
 
@@ -242,8 +245,13 @@ final class JudgmentShadowRecorder {
             body["option"] = option
             body["probabilities"] = probabilities
             body["confidence"] = confidence
-        case let .score(value, _, probabilities, confidence):
+        case let .score(value, legend, probabilities, confidence):
             body["value"] = value
+            // The legend is what makes `probabilities` readable later: it maps each level
+            // key back to the rubric text that produced it. Without it a gate that sums
+            // the highest-risk levels has to assume the key convention, and that
+            // assumption silently changes meaning if the rubric gains or loses a level.
+            body["legend"] = legend
             body["probabilities"] = probabilities
             body["confidence"] = confidence
         }

@@ -46,15 +46,42 @@ final class JudgmentShadowRecorderTests: XCTestCase {
             answersByQuestionID: [
                 "ask_user.recommended_option_risk": .score(
                     value: 0.6,
-                    legend: ["0": "Free"],
+                    legend: ["0": "Free", "1": "Wasteful"],
                     probabilities: ["0": 0.8, "1": 0.2],
                     confidence: 0.74
                 ),
                 "ask_user.needs_human_authority": .noul(probability: 0.08)
             ],
-            usage: JudgmentUsage(inputTokens: 260, outputTokens: 0),
+            usage: JudgmentUsage(inputTokens: 260, outputTokens: 48),
             latencySeconds: 0.11
         )
+    }
+
+    func testARecordCarriesTheOutputTokensAndTheScoreLegend() async throws {
+        // Both are gate inputs the recorder was parsing and then discarding. Without
+        // `output_tokens` the calibration report's cost row cannot be computed from the
+        // data at all. Without `legend` no row says which probability key is which rubric
+        // level, so a gate that sums the highest-risk levels has to assume an index
+        // convention rather than read one — and the assumption only holds while the rubric
+        // keeps its current number of levels.
+        let lines = LineSink()
+        let recorder = recorder(enabled: true, result: judgedResult, lines: lines)
+
+        await recorder.record(
+            interactionID: UUID(uuidString: "33333333-3333-3333-3333-333333333333") ?? UUID(),
+            question: question,
+            outcome: .answered(pickedRecommended: true)
+        )
+
+        let record = try XCTUnwrap(lines.decodedRecords.first)
+        XCTAssertEqual(record["output_tokens"] as? Int, 48)
+
+        let answers = try XCTUnwrap(record["answers"] as? [String: Any])
+        let risk = try XCTUnwrap(answers["ask_user.recommended_option_risk"] as? [String: Any])
+        XCTAssertEqual(risk["legend"] as? [String: String], ["0": "Free", "1": "Wasteful"])
+
+        let authority = try XCTUnwrap(answers["ask_user.needs_human_authority"] as? [String: Any])
+        XCTAssertNil(authority["legend"], "A noul answer has no rubric levels to map.")
     }
 
     func testARecordCarriesTheOutcomeJudgmentAndModelVersion() async throws {
