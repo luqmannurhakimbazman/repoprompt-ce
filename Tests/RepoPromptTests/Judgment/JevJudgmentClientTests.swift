@@ -108,6 +108,59 @@ final class JevJudgmentClientTests: XCTestCase {
         )
     }
 
+    /// The verbatim body `api.typesafe.ai` returned on 2026-09-20, for the real catalogue
+    /// questions. Unlike the hand-written fixtures above, nothing here was invented to suit
+    /// the parser: if the client stops decoding this, it has stopped decoding the service.
+    ///
+    /// Note the `legend` keys. They are 0-based level indices as strings, which is the only
+    /// evidence anywhere in the tree for how a recorded probability map maps back to the
+    /// rubric. A calibration gate that sums the two highest-risk levels reads those keys.
+    func testDecodesTheResponseTheLiveServiceActuallyReturned() async throws {
+        let body = Data("""
+        {"model":"jev-1.13.0","answers":{"ask_user.recommended_option_risk":{"type":"score","score":1.21,\
+        "confidence":0.52,"legend":{"0":"Choosing wrong costs nothing. The run can change course later at no cost.",\
+        "1":"Choosing wrong wastes work that is easy to redo.",\
+        "2":"Choosing wrong writes files or changes local state that a person must undo by hand.",\
+        "3":"Choosing wrong acts outside this machine, or does something no one can undo."},\
+        "probabilities":{"0":0.14,"1":0.6,"2":0.18,"3":0.08}},\
+        "ask_user.needs_human_authority":{"type":"noul","noul":0.53}},\
+        "usage":{"input_tokens":647,"output_tokens":48}}
+        """.utf8)
+        let questions = JudgmentQuestionCatalogue.questions(for: .askUserExpiry(
+            AskUserExpiryJudgmentInput(
+                questionText: "Which direction should slice 2 take?",
+                context: nil,
+                optionLabels: ["Downgrade only", "Substitute"],
+                optionDescriptions: ["", ""],
+                recommendedOptionLabel: "Downgrade only"
+            )
+        ))
+        let declared = JudgmentState.forTesting(
+            questionIDs: questions.map(\.id),
+            fields: ["question": .text("Which direction should slice 2 take?")]
+        )
+
+        let result = try await client(StubHTTPClient(responses: [.status(200, body)]))
+            .judge(state: declared, questions: questions)
+
+        XCTAssertEqual(result.modelVersion, "jev-1.13.0")
+        XCTAssertEqual(result.usage.inputTokens, 647)
+        XCTAssertEqual(result.usage.outputTokens, 48)
+        XCTAssertEqual(result.answersByQuestionID["ask_user.needs_human_authority"], .noul(probability: 0.53))
+
+        guard case let .score(value, legend, probabilities, confidence)? =
+            result.answersByQuestionID["ask_user.recommended_option_risk"]
+        else {
+            return XCTFail("expected a score answer for the risk question")
+        }
+        XCTAssertEqual(value, 1.21)
+        XCTAssertEqual(confidence, 0.52)
+        XCTAssertEqual(Set(legend.keys), ["0", "1", "2", "3"], "Levels are keyed by 0-based index.")
+        XCTAssertEqual(legend["3"], "Choosing wrong acts outside this machine, or does something no one can undo.")
+        XCTAssertEqual(probabilities["1"], 0.6)
+        XCTAssertEqual(probabilities.values.reduce(0, +), 1.0, accuracy: 0.001)
+    }
+
     func testAnswersBothQuestionsOfASingleRequest() async throws {
         let body = Data("""
         {"model":"jev-1.12","answers":{"authority":{"type":"noul","noul":0.04},

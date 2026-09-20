@@ -113,7 +113,13 @@ struct JevJudgmentClient: SystemOneJudging {
             )
         case 401:
             throw JudgmentError.unauthorized
-        case 422:
+        case 400, 422:
+            // The documented validation status is 422, but the live service answers a
+            // malformed request with 400 — an unknown model and an over-long score rubric
+            // both did. Routing 400 to `unexpectedStatus` would keep the number and discard
+            // the server's only account of what was wrong, and nothing downstream records a
+            // reason of its own: a shadow row would read `judgment_available:false` forever
+            // with no way to find out why.
             throw JudgmentError.invalidRequest(Self.truncatedMessage(from: response.data))
         case 429:
             throw JudgmentError.rateLimited
@@ -152,14 +158,31 @@ struct JevJudgmentClient: SystemOneJudging {
             answers[question.id] = try Self.answer(from: rawAnswer, for: question)
         }
 
-        let usage = root["usage"] as? [String: Any]
+        // Checked after the answers, so a response missing an answer is still reported as
+        // `missingAnswer` rather than as an envelope fault.
+        //
+        // These are required rather than defaulted because both feed the calibration
+        // record directly. `model` partitions the sample: defaulting it to `""` would pool
+        // records judged by two different model versions, which is the one thing the
+        // version field exists to prevent. The token counts are the cost figures, and a
+        // silent `0` under-reports rather than reporting nothing.
+        guard let modelVersion = root["model"] as? String, !modelVersion.isEmpty else {
+            throw JudgmentError.malformedResponse("response has no model")
+        }
+        guard let usage = root["usage"] as? [String: Any] else {
+            throw JudgmentError.malformedResponse("response has no usage")
+        }
+        guard let inputTokens = usage["input_tokens"] as? Int else {
+            throw JudgmentError.malformedResponse("response has no usage.input_tokens")
+        }
+        guard let outputTokens = usage["output_tokens"] as? Int else {
+            throw JudgmentError.malformedResponse("response has no usage.output_tokens")
+        }
+
         return JudgmentResult(
-            modelVersion: root["model"] as? String ?? "",
+            modelVersion: modelVersion,
             answersByQuestionID: answers,
-            usage: JudgmentUsage(
-                inputTokens: usage?["input_tokens"] as? Int ?? 0,
-                outputTokens: usage?["output_tokens"] as? Int ?? 0
-            ),
+            usage: JudgmentUsage(inputTokens: inputTokens, outputTokens: outputTokens),
             latencySeconds: latencySeconds
         )
     }
@@ -171,30 +194,24 @@ struct JevJudgmentClient: SystemOneJudging {
         switch question.kind {
         case .noul:
             try requireType(reportedType, equals: "noul", questionID: question.id)
-            guard let probability = raw["noul"] as? Double else {
-                throw JudgmentError.malformedResponse("\(question.id) has no noul probability")
-            }
-            return .noul(probability: probability)
+            return try .noul(probability: number(raw["noul"], field: "noul", questionID: question.id))
         case .choice:
             try requireType(reportedType, equals: "choice", questionID: question.id)
             guard let option = raw["choice"] as? String else {
                 throw JudgmentError.malformedResponse("\(question.id) has no choice")
             }
-            return .choice(
+            return try .choice(
                 option: option,
-                probabilities: doubles(from: raw["probabilities"]),
-                confidence: raw["confidence"] as? Double ?? 0
+                probabilities: numberMap(raw["probabilities"], field: "probabilities", questionID: question.id),
+                confidence: number(raw["confidence"], field: "confidence", questionID: question.id)
             )
         case .score:
             try requireType(reportedType, equals: "score", questionID: question.id)
-            guard let value = raw["score"] as? Double else {
-                throw JudgmentError.malformedResponse("\(question.id) has no score")
-            }
-            return .score(
-                value: value,
-                legend: strings(from: raw["legend"]),
-                probabilities: doubles(from: raw["probabilities"]),
-                confidence: raw["confidence"] as? Double ?? 0
+            return try .score(
+                value: number(raw["score"], field: "score", questionID: question.id),
+                legend: stringMap(raw["legend"], field: "legend", questionID: question.id),
+                probabilities: numberMap(raw["probabilities"], field: "probabilities", questionID: question.id),
+                confidence: number(raw["confidence"], field: "confidence", questionID: question.id)
             )
         }
     }
@@ -205,14 +222,46 @@ struct JevJudgmentClient: SystemOneJudging {
         }
     }
 
-    private static func doubles(from value: Any?) -> [String: Double] {
-        guard let object = value as? [String: Any] else { return [:] }
-        return object.compactMapValues { $0 as? Double }
+    // MARK: - Required field decoding
+
+    //
+    // `confidence` and `probabilities` are required on a choice or score answer, and
+    // `legend` is required on a score. Defaulting any of them locally would turn a contract
+    // violation into a judgment that looks genuine: a `confidence` of 0 is not "no
+    // confidence reported", it is the most under-confident value there is, and it lands
+    // outside the calibration band instead of being discarded. Dropping one bad entry from
+    // a probability map is worse still, because it silently renormalizes the distribution
+    // the risk gate is computed from.
+
+    /// A JSON number, rejecting a boolean.
+    ///
+    /// `true` bridges to `NSNumber`, so reading it as a `Double` yields 1.0 — maximum
+    /// confidence invented out of a type error. `CFBoolean` is the only way to tell the two
+    /// apart once `JSONSerialization` has boxed them.
+    private static func number(_ value: Any?, field: String, questionID: String) throws -> Double {
+        guard let value, CFGetTypeID(value as CFTypeRef) != CFBooleanGetTypeID(), let number = value as? NSNumber else {
+            throw JudgmentError.malformedResponse("\(questionID) has no numeric \(field)")
+        }
+        return number.doubleValue
     }
 
-    private static func strings(from value: Any?) -> [String: String] {
-        guard let object = value as? [String: Any] else { return [:] }
-        return object.compactMapValues { $0 as? String }
+    private static func numberMap(_ value: Any?, field: String, questionID: String) throws -> [String: Double] {
+        guard let object = value as? [String: Any], !object.isEmpty else {
+            throw JudgmentError.malformedResponse("\(questionID) has no \(field)")
+        }
+        return try object.mapValues { try number($0, field: field, questionID: questionID) }
+    }
+
+    private static func stringMap(_ value: Any?, field: String, questionID: String) throws -> [String: String] {
+        guard let object = value as? [String: Any], !object.isEmpty else {
+            throw JudgmentError.malformedResponse("\(questionID) has no \(field)")
+        }
+        return try object.mapValues { entry in
+            guard let text = entry as? String else {
+                throw JudgmentError.malformedResponse("\(questionID) has a non-text entry in \(field)")
+            }
+            return text
+        }
     }
 
     // MARK: - Retry and deadline

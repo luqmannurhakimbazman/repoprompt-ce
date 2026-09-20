@@ -51,6 +51,60 @@ final class JevJudgmentClientErrorTests: XCTestCase {
         """.utf8)
     }
 
+    private var choiceQuestion: JudgmentQuestion {
+        JudgmentQuestion(
+            id: "triage",
+            instructions: "What kind of failure is this?",
+            kind: .choice(rubricByOption: ["compile": "The compiler rejected a file."])
+        )
+    }
+
+    private var scoreQuestion: JudgmentQuestion {
+        JudgmentQuestion(
+            id: "risk",
+            instructions: "How costly is choosing wrong?",
+            kind: .score(levels: ["Free", "Wasteful"])
+        )
+    }
+
+    /// Sends one body against arbitrary questions, with a state declared for exactly them.
+    private func judgmentError(
+        from stub: StubHTTPClient,
+        questions: [JudgmentQuestion]
+    ) async -> JudgmentError? {
+        let declared = JudgmentState.forTesting(
+            questionIDs: questions.map(\.id),
+            fields: ["question": .text("Which database?")]
+        )
+        do {
+            _ = try await client(stub).judge(state: declared, questions: questions)
+            return nil
+        } catch let error as JudgmentError {
+            return error
+        } catch {
+            return nil
+        }
+    }
+
+    private func expectMalformed(
+        _ error: JudgmentError?,
+        mentioning fragments: [String],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard case let .malformedResponse(message) = error else {
+            return XCTFail("expected malformedResponse, got \(String(describing: error))", file: file, line: line)
+        }
+        for fragment in fragments {
+            XCTAssertTrue(
+                message.contains(fragment),
+                "message '\(message)' must name '\(fragment)'",
+                file: file,
+                line: line
+            )
+        }
+    }
+
     // MARK: - Status mapping
 
     func testUnauthorizedIsNotRetried() async {
@@ -122,6 +176,23 @@ final class JevJudgmentClientErrorTests: XCTestCase {
         _ = try await client(stub).judge(state: generous, questions: [question])
 
         XCTAssertEqual(stub.recordedRequests.count, 1, "A superset of the asked questions is fine; a missing one is not.")
+    }
+
+    func testAValidationFailureReportedAs400KeepsTheServerMessage() async {
+        // The live service answers a malformed request with 400, not the documented 422:
+        // an unknown model and an over-long score rubric both came back 400. Mapping it to
+        // `unexpectedStatus` would keep the number and discard the only account of what was
+        // wrong, and the recorder writes no error reason of its own.
+        let body = Data(#"{"detail":"Too many score levels. Must have at most 10 levels."}"#.utf8)
+        let stub = StubHTTPClient(responses: [.status(400, body)])
+
+        let error = await judgmentError(from: stub)
+
+        guard case let .invalidRequest(message) = error else {
+            return XCTFail("expected invalidRequest, got \(String(describing: error))")
+        }
+        XCTAssertTrue(message.contains("Too many score levels"))
+        XCTAssertEqual(stub.recordedRequests.count, 1, "A malformed request must not be retried.")
     }
 
     func testAnUndocumentedStatusIsReportedAsItself() async {
@@ -213,6 +284,128 @@ final class JevJudgmentClientErrorTests: XCTestCase {
             return XCTFail("expected malformedResponse")
         }
         XCTAssertTrue(message.contains("authority"))
+    }
+
+    // MARK: - Required response fields
+
+    //
+    // The vendor documents `confidence` and `probabilities` as required on choice and score
+    // answers, and `legend` as required on score. Defaulting them locally would turn a
+    // contract violation into a genuine-looking judgment — `confidence 0` lands outside the
+    // calibration band instead of being discarded, which shrinks the sample with nothing
+    // recording that it happened. A missing required field is a malformed response.
+
+    func testAChoiceAnswerWithoutConfidenceIsMalformed() async {
+        let body = Data("""
+        {"model":"jev-1.12","answers":{"triage":{"type":"choice","choice":"compile",
+        "probabilities":{"compile":1.0}}},"usage":{"input_tokens":1,"output_tokens":1}}
+        """.utf8)
+
+        let error = await judgmentError(from: StubHTTPClient(responses: [.status(200, body)]), questions: [choiceQuestion])
+
+        expectMalformed(error, mentioning: ["triage", "confidence"])
+    }
+
+    func testAChoiceAnswerWithoutProbabilitiesIsMalformed() async {
+        let body = Data("""
+        {"model":"jev-1.12","answers":{"triage":{"type":"choice","choice":"compile","confidence":0.9}},
+        "usage":{"input_tokens":1,"output_tokens":1}}
+        """.utf8)
+
+        let error = await judgmentError(from: StubHTTPClient(responses: [.status(200, body)]), questions: [choiceQuestion])
+
+        expectMalformed(error, mentioning: ["triage", "probabilities"])
+    }
+
+    func testAScoreAnswerWithoutConfidenceIsMalformed() async {
+        let body = Data("""
+        {"model":"jev-1.12","answers":{"risk":{"type":"score","score":1.4,"legend":{"0":"Free"},
+        "probabilities":{"0":1.0}}},"usage":{"input_tokens":1,"output_tokens":1}}
+        """.utf8)
+
+        let error = await judgmentError(from: StubHTTPClient(responses: [.status(200, body)]), questions: [scoreQuestion])
+
+        expectMalformed(error, mentioning: ["risk", "confidence"])
+    }
+
+    func testAScoreAnswerWithoutALegendIsMalformed() async {
+        // Without the legend nothing in a recorded row says which probability key is which
+        // rubric level, so the calibration gate that sums the two highest-risk levels has to
+        // assume an index convention instead of reading one.
+        let body = Data("""
+        {"model":"jev-1.12","answers":{"risk":{"type":"score","score":1.4,
+        "probabilities":{"0":1.0},"confidence":0.7}},"usage":{"input_tokens":1,"output_tokens":1}}
+        """.utf8)
+
+        let error = await judgmentError(from: StubHTTPClient(responses: [.status(200, body)]), questions: [scoreQuestion])
+
+        expectMalformed(error, mentioning: ["risk", "legend"])
+    }
+
+    func testAScoreAnswerWithoutProbabilitiesIsMalformed() async {
+        let body = Data("""
+        {"model":"jev-1.12","answers":{"risk":{"type":"score","score":1.4,"legend":{"0":"Free"},
+        "confidence":0.7}},"usage":{"input_tokens":1,"output_tokens":1}}
+        """.utf8)
+
+        let error = await judgmentError(from: StubHTTPClient(responses: [.status(200, body)]), questions: [scoreQuestion])
+
+        expectMalformed(error, mentioning: ["risk", "probabilities"])
+    }
+
+    func testAProbabilityMapWithANonNumericEntryIsMalformed() async {
+        // Dropping the bad entry and keeping the rest would silently renormalize the
+        // distribution the risk gate is computed from.
+        let body = Data("""
+        {"model":"jev-1.12","answers":{"triage":{"type":"choice","choice":"compile",
+        "probabilities":{"compile":0.9,"flake":"nope"},"confidence":0.9}},
+        "usage":{"input_tokens":1,"output_tokens":1}}
+        """.utf8)
+
+        let error = await judgmentError(from: StubHTTPClient(responses: [.status(200, body)]), questions: [choiceQuestion])
+
+        expectMalformed(error, mentioning: ["triage", "probabilities"])
+    }
+
+    func testABooleanConfidenceIsMalformed() async {
+        // `true` bridges to NSNumber, so `as? Double` would read it as 1.0 — maximum
+        // confidence invented out of a type error.
+        let body = Data("""
+        {"model":"jev-1.12","answers":{"triage":{"type":"choice","choice":"compile",
+        "probabilities":{"compile":1.0},"confidence":true}},"usage":{"input_tokens":1,"output_tokens":1}}
+        """.utf8)
+
+        let error = await judgmentError(from: StubHTTPClient(responses: [.status(200, body)]), questions: [choiceQuestion])
+
+        expectMalformed(error, mentioning: ["triage", "confidence"])
+    }
+
+    func testABooleanNoulProbabilityIsMalformed() async {
+        // Same coercion as the boolean confidence above, on the field a `noul` answer is
+        // entirely made of.
+        let body = Data("""
+        {"model":"jev-1.12","answers":{"authority":{"type":"noul","noul":true}},"usage":{"input_tokens":1,"output_tokens":1}}
+        """.utf8)
+
+        await expectMalformed(judgmentError(from: StubHTTPClient(responses: [.status(200, body)])), mentioning: ["authority", "noul"])
+    }
+
+    func testAResponseWithoutAModelIsMalformed() async {
+        // `model_version` is how the calibration sample is partitioned: pooling records from
+        // two model versions under an empty string would merge samples that must not merge.
+        let body = Data("""
+        {"answers":{"authority":{"type":"noul","noul":0.04}},"usage":{"input_tokens":1,"output_tokens":1}}
+        """.utf8)
+
+        await expectMalformed(judgmentError(from: StubHTTPClient(responses: [.status(200, body)])), mentioning: ["model"])
+    }
+
+    func testAResponseWithoutOutputTokensIsMalformed() async {
+        let body = Data("""
+        {"model":"jev-1.12","answers":{"authority":{"type":"noul","noul":0.04}},"usage":{"input_tokens":1}}
+        """.utf8)
+
+        await expectMalformed(judgmentError(from: StubHTTPClient(responses: [.status(200, body)])), mentioning: ["output_tokens"])
     }
 
     func testEmptyQuestionsAreRejectedBeforeAnyRequest() async {
