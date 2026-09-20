@@ -106,6 +106,85 @@ final class JudgmentAppSettingsGroupTests: XCTestCase {
         XCTAssertEqual(JudgmentAPIKeyStore.presenceLabel(), JudgmentAPIKeyStore.absentLabel)
     }
 
+    // MARK: - The presence labels are not credentials
+
+    /// Writing `not set` over a stored key used to install the literal string `not set` as
+    /// the credential, because the changed-value gate compares the new value against the
+    /// presence label the read returns, and `not set` differs from `set`. Every later
+    /// request then sent `Authorization: Bearer not set` and failed 401, while a read still
+    /// reported `set`. An operator clearing the key the intuitive way poisoned it silently.
+    func testWritingTheAbsentLabelOverAStoredKeyIsRejectedRatherThanStored() async throws {
+        let storage = InMemorySecureStore()
+        JudgmentAPIKeyStore.storageForTesting = storage
+        let service = try service()
+
+        _ = try await service.handleForTesting([
+            "op": .string("set"),
+            "key": .string("judgment.api_key"),
+            "value": .string("sk-systemone-abc")
+        ])
+
+        do {
+            _ = try await service.handleForTesting([
+                "op": .string("set"),
+                "key": .string("judgment.api_key"),
+                "value": .string(JudgmentAPIKeyStore.absentLabel)
+            ])
+            XCTFail("expected the presence label to be rejected")
+        } catch {
+            XCTAssertTrue(
+                "\(error)".contains("empty"),
+                "The error must point at the command that does work: '\(error)'"
+            )
+        }
+
+        XCTAssertEqual(
+            try storage.getPlainValue(for: .typeSafeSystemOneAPI),
+            "sk-systemone-abc",
+            "The stored key must survive a rejected write untouched."
+        )
+    }
+
+    func testWritingThePresentLabelWithNoKeyStoredIsRejectedRatherThanStored() async throws {
+        let storage = InMemorySecureStore()
+        JudgmentAPIKeyStore.storageForTesting = storage
+        let service = try service()
+
+        do {
+            _ = try await service.handleForTesting([
+                "op": .string("set"),
+                "key": .string("judgment.api_key"),
+                "value": .string(JudgmentAPIKeyStore.presentLabel)
+            ])
+            XCTFail("expected the presence label to be rejected")
+        } catch {
+            // Expected.
+        }
+
+        XCTAssertNil(try storage.getPlainValue(for: .typeSafeSystemOneAPI))
+    }
+
+    func testAPresenceLabelIsRejectedEvenWithSurroundingWhitespace() async throws {
+        // The store trims before writing, so an untrimmed label would reach secure storage
+        // as the trimmed sentinel.
+        let storage = InMemorySecureStore()
+        JudgmentAPIKeyStore.storageForTesting = storage
+        let service = try service()
+
+        do {
+            _ = try await service.handleForTesting([
+                "op": .string("set"),
+                "key": .string("judgment.api_key"),
+                "value": .string("  \(JudgmentAPIKeyStore.absentLabel)  ")
+            ])
+            XCTFail("expected the padded presence label to be rejected")
+        } catch {
+            // Expected.
+        }
+
+        XCTAssertNil(try storage.getPlainValue(for: .typeSafeSystemOneAPI))
+    }
+
     func testAStoredKeyIsTrimmedSoAPastedNewlineDoesNotBreakAuthorization() throws {
         let storage = InMemorySecureStore()
         JudgmentAPIKeyStore.storageForTesting = storage

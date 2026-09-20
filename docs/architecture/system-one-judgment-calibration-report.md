@@ -23,6 +23,10 @@ rpce-cli-debug -w 1 -c app_settings -j '{"op":"list","group":"judgment","detaile
 The last call reports `judgment.api_key` as `set` or `not set`. Reading it never returns
 the key. To remove the key, set it to an empty string.
 
+Setting it to the literal `set` or `not set` is refused. Those are the labels a read gives
+back, not keys, and storing one would install that string as the credential — every request
+would then fail 401 while a read still reported `set`.
+
 **The key does not survive a relaunch of a default debug build.** Debug packaging uses
 ephemeral in-memory secure storage unless you build with an explicit
 `SIGN_IDENTITY="Apple Development: ..."`, so an ad-hoc or auto-detected debug build loses

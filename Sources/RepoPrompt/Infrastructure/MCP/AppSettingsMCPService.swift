@@ -1047,7 +1047,28 @@ private enum AppSettingsMCPRegistry {
                 maxLength: debugDefaultsStringMaxLength,
                 allowEmpty: true,
                 read: { _ in .string(JudgmentAPIKeyStore.presenceLabel()) },
-                write: { _, value in try JudgmentAPIKeyStore.write(requiredString(from: value)) }
+                write: { _, value in try JudgmentAPIKeyStore.write(requiredString(from: value)) },
+                additionalValidation: { value in
+                    // This setting reads back a presence label rather than what it stores,
+                    // so the two labels are the one pair of strings a caller can send that
+                    // mean something other than "store this key". Writing `not set` over a
+                    // stored key used to install that literal string as the credential:
+                    // the changed-value gate saw a difference from `set`, the write went
+                    // through, every later request sent `Authorization: Bearer not set` and
+                    // failed 401, and a read still reported `set`. Rejected here rather
+                    // than in `JudgmentAPIKeyStore.write`, because validation runs before
+                    // the changed-value gate — so the label that happens to equal the
+                    // current readback is refused with the same message instead of being
+                    // silently dropped as an unchanged write.
+                    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard trimmed == JudgmentAPIKeyStore.presentLabel
+                        || trimmed == JudgmentAPIKeyStore.absentLabel
+                    else { return }
+                    throw MCPError.invalidParams(
+                        "'\(trimmed)' is the presence indicator this setting reads back, not an API key. "
+                            + "Set an empty string to remove the stored key."
+                    )
+                }
             )
         ]
     #else
@@ -1178,7 +1199,12 @@ private enum AppSettingsMCPRegistry {
         allowEmpty: Bool,
         read: @escaping @MainActor (GlobalSettingsStore) -> Value,
         write: @escaping @MainActor (GlobalSettingsStore, Value) throws -> Void,
-        afterWrite: (@MainActor (GlobalSettingsStore, Value, NotificationCenter) -> Void)? = nil
+        afterWrite: (@MainActor (GlobalSettingsStore, Value, NotificationCenter) -> Void)? = nil,
+        // Runs after the shared length and emptiness checks, and before `op=set` compares
+        // the new value with the old one. A setting whose read is not its write — the
+        // System One key reads back a presence label — needs to reject values here, because
+        // by the time the comparison runs a rejected value can look like an ordinary change.
+        additionalValidation: ((String) throws -> Void)? = nil
     ) -> AppSettingDefinition {
         AppSettingDefinition(
             key: key,
@@ -1188,7 +1214,13 @@ private enum AppSettingsMCPRegistry {
             description: description,
             allowedValues: nil,
             read: read,
-            validate: { value in try validateRawString(value, key: key, maxLength: maxLength, allowEmpty: allowEmpty) },
+            validate: { value in
+                let validated = try validateRawString(value, key: key, maxLength: maxLength, allowEmpty: allowEmpty)
+                if let additionalValidation {
+                    try additionalValidation(requiredString(from: validated))
+                }
+                return validated
+            },
             write: write,
             afterWrite: afterWrite
         )
