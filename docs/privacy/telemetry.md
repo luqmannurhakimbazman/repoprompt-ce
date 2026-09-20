@@ -104,12 +104,15 @@ collection in the app before upload.
 
 DEBUG-only and off by default. Nothing is sent unless someone stores a TypeSafe API key
 under the `TypeSafeSystemOneAPI` secure-storage account **and** sets
-`judgment.shadow_enabled`. With no key, the app makes no request.
+`judgment.shadow_enabled`. With no key, the app makes no request. The DEBUG-only
+`judgment.api_key` setting is the only writer of that account; reading it returns `set` or
+`not set` and never the key.
 
 What leaves this machine, per recorded `ask_user` question:
 
 - the question text and its optional per-question context,
-- the option labels and option descriptions,
+- the option labels and option descriptions, positionally aligned, with an empty string
+  where an option has no description,
 - which option the agent marked as recommended.
 
 Those five fields are the whole payload, and the set is fixed in code: `JudgmentState` sits

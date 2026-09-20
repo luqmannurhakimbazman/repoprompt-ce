@@ -1,7 +1,8 @@
 # System One judgment seam (TypeSafe Jev)
 
 Date: 18 September 2026
-Status: design approved, not implemented
+Status: slice 1 implemented. Shadow recording is DEBUG-only and off unless a key is stored and
+`judgment.shadow_enabled` is on. The calibration gate below has not been called yet.
 Scope: slice 1 only (the seam plus shadow-mode measurement). Slice 2 is sketched, not specified.
 
 ## Summary
@@ -271,37 +272,64 @@ supply rate and cost data, never accuracy.
 
 ### Settings surface
 
-Two DEBUG-only keys in `Sources/RepoPrompt/Infrastructure/MCP/AppSettingsMCPService.swift`, following
-the `agent_mode.claude_raw_event_logging_enabled` precedent exactly:
+Three DEBUG-only keys in `Sources/RepoPrompt/Infrastructure/MCP/AppSettingsMCPService.swift`,
+following the `agent_mode.claude_raw_event_logging_enabled` precedent:
 
 - `judgment.shadow_enabled` — bool, default false.
 - `judgment.shadow_log_file_path` — raw text, empty clears the override and logging then writes to a
   non-workspace temp debug directory.
+- `judgment.api_key` — raw text, write-only. A write stores the key in secure storage under the
+  `typeSafeSystemOneAPI` account; an empty or whitespace-only value deletes it. A read returns the
+  presence indicator `set` or `not set` and never the key, so the secret cannot reach
+  `app_settings list` output or a diagnostics dump. This key exists because `KeyManager.saveAPIKey`
+  is keyed on `AIProviderType` and registering this model there is prohibited, so without its own
+  writer nothing in the tree could ever store the key and every record would say
+  `judgment_available: false`.
 
 No release-build surface and no Settings UI in slice 1. The feature has no user-visible effect yet, so
 it needs no user-visible control.
 
 ### The calibration gate
 
-Slice 1 is finished when the recorder has collected at least 100 human-answered interactions and a
-report states all three numbers. Slice 2 proceeds only if all three hold:
+Slice 1 is finished when the recorder has collected **at least 100 human-answered interactions** and
+a report states all three numbers. The floor is counted in interactions, not records: the recorder
+writes one record per question and `ask_user` accepts up to 10 questions per interaction, so records
+are clustered within an interaction and 100 records can be far less evidence than 100 interactions.
+The report states the record count alongside the interaction count, with no floor of its own.
 
-1. Among interactions the rubric judges safe to auto-answer, the person picked the recommended option
+Slice 2 proceeds only if all three gates hold:
+
+1. Among questions the rubric judges safe to auto-answer, the person picked the recommended option
    in at least 90% of cases. The safe band for this measurement is the initial proposal
    `needs_human_authority` at or below 0.15, and `recommended_option_risk` at or below 1.0 with score
    confidence at or above 0.7. These three numbers exist to make the gate measurable, not because
    they are known to be right; slice 2 may move them anywhere the report's distribution supports.
+
+   **A skip counts as a disagreement**, in the denominator and against the rate. A skip is a person
+   declining to choose, and slice 2 would substitute the recommended option in exactly that case, so
+   a skip is precisely where an auto-answer would act. Excluding skips would inflate agreement on the
+   questions people found least answerable.
 2. Disagreements concentrate outside that band. If judged-safe and judged-unsafe cases disagree with
    the human at similar rates, the confidence signal carries no information and the thresholds are
    arbitrary.
-3. No judged-safe case is one the rubric rated at risk level 2 or 3.
+3. No safe-band record puts more than 0.20 combined probability on risk levels 2 and 3. The
+   threshold is zero such records.
+
+   Gate 3 is about the recorded distribution, not about the point estimate. The safe band already
+   requires `recommended_option_risk` at or below 1.0, so "a safe-band record the rubric rated 2 or
+   3" is empty by construction and would pass without measuring anything. Reading the tail of
+   `probabilities` instead catches the case the gate is for: a judgment whose expected value sits in
+   the safe band while it holds real probability mass on an irreversible outcome.
 
 If the gate fails, the seam is deleted rather than kept as dead code, and this document records the
 measured result. Keeping an unused network seam is worse than having none.
 
 Rubric wording may be revised and re-measured before the gate is called, but a revision resets the
-100-interaction count. Synthetic questions replayed from real transcripts may be used to sanity-check
-rubric wording; they must never contribute to the accuracy number.
+100-interaction count. Every record carries `catalogue_version`, a fingerprint of the exact wire
+bodies of every catalogue entry, so a revision is visible in the data rather than remembered: two
+records with different values were judged against different rubrics and must not be pooled.
+Synthetic questions replayed from real transcripts may be used to sanity-check rubric wording; they
+must never contribute to the accuracy number.
 
 100 human-answered interactions may take weeks of ordinary use to accumulate. That is accepted. The
 alternative is shipping thresholds that were guessed.
@@ -329,14 +357,15 @@ touches the network.
 - `JevJudgmentClientTests` — decode fixtures for all three answer types; `401`, `422`, `429`, `529`,
   malformed JSON, a response missing a requested question id; retry behavior for `429`/`529` and
   absence of retry for `401`/`422`; deadline enforcement.
-- `JudgmentStateRedactorTests` — the serialized payload's key set equals the catalogue's declared set
-  for each entry; file contents, absolute paths, and environment values are absent when a caller tries
-  to pass them.
+- `JudgmentCatalogueRedactionTests` — the serialized payload's key set equals the catalogue's
+  declared set for each entry; `allQuestions` covers every question any `JudgmentRequest` case asks;
+  the catalogue fingerprint tracks rubric wording.
 - `JudgmentPolicyTests` — every `JudgmentError` case maps to `nil`; no key means no call.
 - `AskUserExpiryBehaviorResolverTests` — the resolver returns the configured behavior unchanged in
   slice 1, for every combination of judged answer, including a stub that throws.
-- `JudgmentShadowDiagnosticsTests` — a recorded interaction returns the same `AgentAskUserResponse` as
-  an unrecorded one; a record carries the observed model version.
+- `JudgmentShadowRecorderTests` — a recorded interaction returns the same `AgentAskUserResponse` as
+  an unrecorded one; a record carries the observed model version and the catalogue fingerprint; each
+  row's `picked_recommended` is computed from its own question's draft.
 
 Validation before handoff:
 
