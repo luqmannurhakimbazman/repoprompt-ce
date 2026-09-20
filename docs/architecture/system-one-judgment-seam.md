@@ -167,8 +167,8 @@ text, and its declared state fields. Two consequences: shadow records stay compa
 and the redactor has a single place to read an allow-list from. A later conductor-side reuse copies
 this file's rubrics verbatim rather than paraphrasing them.
 
-Slice 1 declares exactly two entries, both for `ask_user`. Both travel in one request, because Jev
-answers the questions in a request independently and in parallel:
+Slice 1 declares exactly three entries, all for `ask_user`. All three travel in one request, because
+Jev answers the questions in a request independently and in parallel:
 
 - `ask_user.recommended_option_risk`, a `score` with ordered levels:
   0. "Choosing wrong costs nothing. The run can change course later at no cost."
@@ -179,12 +179,25 @@ answers the questions in a request independently and in parallel:
   - true: "The question asks for permission, approval, or a decision the user reserved for themselves."
   - false: "The question asks for a preference, a name, or a technical detail the agent could have
     worked out itself."
+- `ask_user.picks_recommended_option`, a `noul` with criteria:
+  - true: "The user would accept the recommended option as their own answer."
+  - false: "The user would pick one of the other options, write their own answer, or decline to answer
+    the question."
+
+The first two gate the agent's recommendation and predict nothing, so neither can be scored against
+what the person did. The third predicts the label every answered row already carries, which is what
+lets the sample separate a model that discriminates from one riding a high base rate: if people take
+the recommended option most of the time anyway, a band clearing 90% agreement has shown nothing. It
+asks about the recommended option rather than naming the choices, because catalogue wording is fixed
+at compile time — the options themselves travel in the state payload, so the model reads them without
+the question varying per interaction.
 
 **`JudgmentStateRedactor.swift`** — builds the `state` payload.
 
 Redaction is a required stage, not a courtesy. The redactor reads the catalogue entry's declared
-fields and emits only those. For the two `ask_user` questions the payload is the question text, the
+fields and emits only those. For the `ask_user` questions the payload is the question text, the
 per-question context string, the option labels and descriptions, and which label is recommended.
+Adding the third question added no field: it reads the same five.
 
 `JudgmentState` lives in the redactor's own file behind a `fileprivate` initialiser, so no call site
 outside that file can assemble a payload at all. A `#if DEBUG` `forTesting` factory is the single
@@ -225,8 +238,12 @@ func effectiveBehavior(
 ```
 
 In slice 1 the resolver returns `configured` unchanged, and records a shadow judgment on the way past.
-In slice 2 it may downgrade a judged-unsafe interaction to `.returnNoAnswer`. The enum stays pure and
-unit-testable, and the async work sits at the call site that already awaits a timer.
+In slice 2, whose direction was decided on 2026-09-20 as substitution, a judgment inside the safe band
+answers the expired question with its recommended option instead of returning no answer. An earlier
+draft of this section said the opposite, that slice 2 would downgrade a judged-unsafe interaction to
+`.returnNoAnswer`; the gates in the calibration report were written against that reading and have been
+re-specified. The enum stays pure and unit-testable, and the async work sits at the call site that
+already awaits a timer.
 
 Latency is free here. The expiry path has already waited out the full inactivity window, so an extra
 100 ms is invisible.

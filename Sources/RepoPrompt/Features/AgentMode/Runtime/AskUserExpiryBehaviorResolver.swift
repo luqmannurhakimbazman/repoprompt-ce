@@ -3,9 +3,18 @@ import Foundation
 /// Resolves what an expired `ask_user` interaction should do.
 ///
 /// In slice 1 it always returns the configured behavior and only records a shadow
-/// judgment. It exists as a seam so slice 2 can downgrade a judged-unsafe interaction to
-/// `.returnNoAnswer` without making `AskUserTimeoutBehavior.expiredResponse` async: that
-/// method is pure and synchronous, and should stay both.
+/// judgment. It exists as a seam so slice 2 can return a different behavior than the one
+/// configured, without making `AskUserTimeoutBehavior.expiredResponse` async: that method
+/// is pure and synchronous, and should stay both.
+///
+/// Slice 2's direction was decided on 2026-09-20 as **substitution**: a judgment inside the
+/// safe band answers the expired question with its recommended option, in cases that would
+/// otherwise return no answer. An earlier draft of this comment described the opposite —
+/// downgrading a judged-unsafe interaction to `.returnNoAnswer` — and the calibration gates
+/// were written against that reading. The distinction is not cosmetic: substitution acts
+/// where nobody was present, so a wrong "safe" takes an action no one authorised, and the
+/// gate has to measure the band it would act inside rather than the band it would refuse.
+/// See `docs/architecture/system-one-judgment-calibration-report.md`.
 @MainActor
 enum AskUserExpiryBehaviorResolver {
     static func effectiveBehavior(

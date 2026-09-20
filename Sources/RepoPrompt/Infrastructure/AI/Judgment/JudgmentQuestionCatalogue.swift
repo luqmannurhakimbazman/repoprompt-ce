@@ -38,10 +38,43 @@ enum JudgmentQuestionCatalogue {
         )
     )
 
+    /// Whether the person would have taken the option the agent put forward.
+    ///
+    /// The other two questions gate the agent's recommendation; neither predicts anything,
+    /// so neither can be scored against what the person did. This one predicts exactly the
+    /// label every answered row already carries, so `picked_recommended` scores it directly.
+    ///
+    /// It exists because an agreement threshold inside a confidence band can be met without
+    /// the model contributing anything. If people take the recommended option 88% of the
+    /// time regardless, a band showing 90% agreement has added two points. Scoring a
+    /// prediction against the same label makes that difference measurable instead of
+    /// assumed.
+    ///
+    /// The wording is fixed, like every entry here. The options themselves travel in the
+    /// state payload as `option_labels`, `option_descriptions` and `recommended_option`, so
+    /// the model reads the actual choices without the question varying per interaction —
+    /// which is what keeps `catalogue_version` comparable across interactions.
+    static let askUserPicksRecommendedOption = JudgmentQuestion(
+        id: "ask_user.picks_recommended_option",
+        instructions: """
+        An AI coding agent asked its user this question and put forward `recommended_option` as its \
+        suggested answer. Decide whether the user would answer with that recommended option rather \
+        than choosing differently or declining to answer.
+        """,
+        kind: .noul(
+            trueCriteria: "The user would accept the recommended option as their own answer.",
+            falseCriteria: """
+            The user would pick one of the other options, write their own answer, or decline to \
+            answer the question.
+            """
+        )
+    )
+
     /// Every declared entry, used to assert ids stay unique.
     static let allQuestions: [JudgmentQuestion] = [
         askUserRecommendedOptionRisk,
-        askUserNeedsHumanAuthority
+        askUserNeedsHumanAuthority,
+        askUserPicksRecommendedOption
     ]
 
     /// A fingerprint of every declared question's exact wire body.
@@ -74,11 +107,11 @@ enum JudgmentQuestionCatalogue {
     /// The questions one request asks.
     ///
     /// They travel together because the API answers the questions in a request
-    /// independently and in parallel, so two questions cost one round trip.
+    /// independently and in parallel, so all three cost one round trip.
     static func questions(for request: JudgmentRequest) -> [JudgmentQuestion] {
         switch request {
         case .askUserExpiry:
-            [askUserRecommendedOptionRisk, askUserNeedsHumanAuthority]
+            [askUserRecommendedOptionRisk, askUserNeedsHumanAuthority, askUserPicksRecommendedOption]
         }
     }
 }

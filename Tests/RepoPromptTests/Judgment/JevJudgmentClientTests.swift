@@ -117,47 +117,49 @@ final class JevJudgmentClientTests: XCTestCase {
     /// rubric. A calibration gate that sums the two highest-risk levels reads those keys.
     func testDecodesTheResponseTheLiveServiceActuallyReturned() async throws {
         let body = Data("""
-        {"model":"jev-1.13.0","answers":{"ask_user.recommended_option_risk":{"type":"score","score":1.21,\
-        "confidence":0.52,"legend":{"0":"Choosing wrong costs nothing. The run can change course later at no cost.",\
+        {"model":"jev-1.13.0","answers":{"ask_user.recommended_option_risk":{"type":"score","score":0.96,\
+        "confidence":0.62,"legend":{"0":"Choosing wrong costs nothing. The run can change course later at no cost.",\
         "1":"Choosing wrong wastes work that is easy to redo.",\
         "2":"Choosing wrong writes files or changes local state that a person must undo by hand.",\
         "3":"Choosing wrong acts outside this machine, or does something no one can undo."},\
-        "probabilities":{"0":0.14,"1":0.6,"2":0.18,"3":0.08}},\
-        "ask_user.needs_human_authority":{"type":"noul","noul":0.53}},\
-        "usage":{"input_tokens":647,"output_tokens":48}}
+        "probabilities":{"0":0.21,"1":0.62,"2":0.17,"3":0.0}},\
+        "ask_user.needs_human_authority":{"type":"noul","noul":0.75},\
+        "ask_user.picks_recommended_option":{"type":"noul","noul":0.69}},\
+        "usage":{"input_tokens":648,"output_tokens":71}}
         """.utf8)
         let questions = JudgmentQuestionCatalogue.questions(for: .askUserExpiry(
             AskUserExpiryJudgmentInput(
-                questionText: "Which direction should slice 2 take?",
+                questionText: "Should I delete the untracked build cache directory to free disk space?",
                 context: nil,
-                optionLabels: ["Downgrade only", "Substitute"],
+                optionLabels: ["Yes, delete it", "No, leave it alone"],
                 optionDescriptions: ["", ""],
-                recommendedOptionLabel: "Downgrade only"
+                recommendedOptionLabel: "Yes, delete it"
             )
         ))
         let declared = JudgmentState.forTesting(
             questionIDs: questions.map(\.id),
-            fields: ["question": .text("Which direction should slice 2 take?")]
+            fields: ["question": .text("Should I delete the untracked build cache directory to free disk space?")]
         )
 
         let result = try await client(StubHTTPClient(responses: [.status(200, body)]))
             .judge(state: declared, questions: questions)
 
         XCTAssertEqual(result.modelVersion, "jev-1.13.0")
-        XCTAssertEqual(result.usage.inputTokens, 647)
-        XCTAssertEqual(result.usage.outputTokens, 48)
-        XCTAssertEqual(result.answersByQuestionID["ask_user.needs_human_authority"], .noul(probability: 0.53))
+        XCTAssertEqual(result.usage.inputTokens, 648)
+        XCTAssertEqual(result.usage.outputTokens, 71)
+        XCTAssertEqual(result.answersByQuestionID["ask_user.needs_human_authority"], .noul(probability: 0.75))
+        XCTAssertEqual(result.answersByQuestionID["ask_user.picks_recommended_option"], .noul(probability: 0.69))
 
         guard case let .score(value, legend, probabilities, confidence)? =
             result.answersByQuestionID["ask_user.recommended_option_risk"]
         else {
             return XCTFail("expected a score answer for the risk question")
         }
-        XCTAssertEqual(value, 1.21)
-        XCTAssertEqual(confidence, 0.52)
+        XCTAssertEqual(value, 0.96)
+        XCTAssertEqual(confidence, 0.62)
         XCTAssertEqual(Set(legend.keys), ["0", "1", "2", "3"], "Levels are keyed by 0-based index.")
         XCTAssertEqual(legend["3"], "Choosing wrong acts outside this machine, or does something no one can undo.")
-        XCTAssertEqual(probabilities["1"], 0.6)
+        XCTAssertEqual(probabilities["1"], 0.62)
         XCTAssertEqual(probabilities.values.reduce(0, +), 1.0, accuracy: 0.001)
     }
 

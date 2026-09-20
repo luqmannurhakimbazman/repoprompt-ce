@@ -41,12 +41,40 @@ final class JudgmentCatalogueRedactionTests: XCTestCase {
         XCTAssertNotNil(falseCriteria)
     }
 
-    func testAnAskUserRequestAsksBothQuestionsInOneRequest() {
+    func testAnAskUserRequestAsksEveryQuestionInOneRequest() {
         let questions = JudgmentQuestionCatalogue.questions(for: .askUserExpiry(input))
 
         XCTAssertEqual(
             questions.map(\.id).sorted(),
-            ["ask_user.needs_human_authority", "ask_user.recommended_option_risk"]
+            [
+                "ask_user.needs_human_authority",
+                "ask_user.picks_recommended_option",
+                "ask_user.recommended_option_risk"
+            ]
+        )
+    }
+
+    /// The other two questions gate the agent's recommendation without predicting anything.
+    /// This one predicts the label the row already records, so `picked_recommended` scores
+    /// it directly and the sample can show whether the model beats the base rate — the rate
+    /// at which people take the recommended option anyway. Without it a band can clear its
+    /// agreement threshold purely because recommendations are usually good.
+    ///
+    /// Fixed wording, like every catalogue entry. The options themselves travel in the
+    /// state payload, so the model reads them without the question varying per interaction.
+    func testThePredictionQuestionIsANoulAboutTheRecommendedOption() throws {
+        let question = try XCTUnwrap(
+            JudgmentQuestionCatalogue.allQuestions.first { $0.id == "ask_user.picks_recommended_option" }
+        )
+
+        guard case let .noul(trueCriteria, falseCriteria) = question.kind else {
+            return XCTFail("the prediction question must be a noul")
+        }
+        XCTAssertNotNil(trueCriteria)
+        XCTAssertNotNil(falseCriteria)
+        XCTAssertTrue(
+            question.instructions.contains("recommended"),
+            "The question must be about the recommended option, which is what slice 2 would fill in."
         )
     }
 

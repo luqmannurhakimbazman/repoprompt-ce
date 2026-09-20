@@ -71,7 +71,15 @@ final class JudgmentPolicyTests: XCTestCase {
             Set(recorder.recordedState?.fields.keys.map(\.self) ?? []),
             ["question", "context", "option_labels", "option_descriptions", "recommended_option"]
         )
-        XCTAssertEqual(recorder.recordedQuestions?.count, 2)
+        XCTAssertEqual(
+            recorder.recordedQuestions?.map(\.id).sorted(),
+            [
+                "ask_user.needs_human_authority",
+                "ask_user.picks_recommended_option",
+                "ask_user.recommended_option_risk"
+            ],
+            "All three travel in one request; the API answers them independently."
+        )
     }
 
     // MARK: - Doubles

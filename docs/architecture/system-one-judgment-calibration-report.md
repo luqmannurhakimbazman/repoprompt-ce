@@ -157,15 +157,46 @@ The second absent case — a question with no draft — cannot arise from the an
 rejects an interaction carrying a question with neither an answer nor a skip, before any row
 is recorded.
 
-## Gate 2: the confidence signal carries information
+## Gate 2: the judgment beats the base rate
 
-| Band | Records | Human picked the recommended option |
+This is the gate that decides whether the model is contributing anything, and it is easy to
+pass by accident. Gate 1 can clear 90% agreement inside the band while the model adds
+nothing, because people may take the recommended option 88% of the time regardless. The
+number that matters is the **lift** over that base rate, not the level.
+
+| Measure | Records | Human picked the recommended option | Threshold |
+| --- | --- | --- | --- |
+| All human-answered records (the base rate) | | | reported |
+| Safe band | | | base rate **+ at least 15 points** |
+| Outside the safe band | | | reported |
+| Safe band minus outside-band (the separation) | — | | at least **25 points** |
+
+Both thresholds must hold. The first says the band finds better-than-average cases; the
+second says confidence discriminates rather than merely correlating with an easy majority.
+A band at 92% against an 89% base rate fails, however good 92% looks on its own.
+
+### The prediction question scores directly
+
+`ask_user.picks_recommended_option` predicts the same label the row records, so it can be
+scored per record rather than inferred from a band:
+
+| Measure | Value | Threshold |
 | --- | --- | --- |
-| Safe band | | |
-| Outside the safe band | | |
+| Records where the prediction was above 0.5 and `picked_recommended` was true, plus those below 0.5 and false | | reported |
+| That accuracy, minus the base rate | | at least **10 points** |
+| Brier score of the prediction against `picked_recommended` | | reported |
 
-The two rates must differ materially. If they are similar, confidence carries no
-information on this workload and the thresholds are arbitrary.
+A model that cannot beat "always predict the recommended option" on this workload is not a
+usable gatekeeper for it, whatever the band looks like. Report the Brier score even when the
+threshold passes: it is the one number that shows whether the probabilities are calibrated
+rather than merely ordered correctly.
+
+**First observation, n=1, recorded because it points the wrong way.** On the one real
+question put to the live service — "Should I delete the untracked build cache directory?",
+recommended option "Yes, delete it" — the model returned `picks_recommended_option: 0.69`
+and the person answered "No, leave it alone". The prediction was wrong, and confidently so.
+The authority question was right on the same record (0.75). One sample decides nothing, and
+it is the reason this gate exists rather than a reason to skip collection.
 
 ## Gate 3: no judged-safe record with real risk mass
 
@@ -178,6 +209,36 @@ for levels 2 and 3. The safe band already caps the point estimate at 1.0, so cou
 safe-band records "rated 2 or 3" would be zero by construction and would measure nothing.
 The tail is what this gate is for: a judgment whose expected value sits in the safe band
 while it still holds real probability mass on an irreversible outcome.
+
+## What slice 2 should be, if the gates hold
+
+Direction, decided 2026-09-20: **substitution**. An expired question whose judgment falls in
+the safe band is auto-answered with its recommended option. Note that
+`AskUserExpiryBehaviorResolver.swift` and `system-one-judgment-seam.md` still describe the
+opposite — downgrading a judged-unsafe interaction — and must be reconciled to this before
+slice 2 is specified.
+
+Two constraints on the shape, both of which the data must support:
+
+**`needs_human_authority` is a hard exclusion, not a contribution to a score.** The
+repository forbids using a judgment in permission grants, tool auto-approval, or any path
+that requires a human to authorise. Substitution auto-answers a question a human did not
+answer, so any question the model reads as reserved for the user is ineligible whatever its
+risk score says. Validate the band with that exclusion applied, so the band being measured
+is the band that would ship.
+
+**A gate has two outcomes; this should have three.** System One is a fast judgment sitting
+in front of a slower reasoner that is still running, and the useful pairing is not
+classifier-plus-default. A low-confidence judgment should route the question back to the
+agent — which can re-read the situation, gather more context, or ask again more precisely —
+rather than fall through to a fixed behaviour. Act, decline, escalate. The current data
+supports designing this: `confidence` and both `noul` probabilities are recorded per record,
+so the escalation threshold can be chosen from the distribution rather than guessed.
+
+What the seam does **not** support today is adaptation. Rubric wording is the real interface
+to this model, and it changes only when a person edits the catalogue; `catalogue_version`
+exists to make that a clean sample reset. Nothing feeds disagreements back automatically,
+and nothing should until there is evidence that the fixed rubrics work at all.
 
 ## Verdict
 
