@@ -40,7 +40,13 @@ final class AppSettingsMCPService: Service {
     }
 
     private func makeTools() -> [Tool] {
-        [
+        // Derived from the registry rather than written out twice more. The schema enum and
+        // the description below had already drifted from it: DEBUG adds `judgment` and
+        // neither copy knew. Nothing here validates a call against the advertised enum, so
+        // the drift cost nothing locally and stayed invisible, but a schema-validating
+        // client would refuse a group the app accepts.
+        let groups = AppSettingsMCPRegistry.groups
+        return [
             Tool(
                 name: Self.toolName,
                 description: """
@@ -50,7 +56,7 @@ final class AppSettingsMCPService: Service {
 
                 **Selectors**: `get` accepts exactly one of `key`, `keys`, or `group`. `set` and `options` take one `key`.
 
-                **Groups**: `ui` · `prompt_packaging` · `models` · `context_builder` · `mcp` · `code_maps` · `file_system` · `agent_mode`
+                **Groups**: \(groups.map { "`\($0)`" }.joined(separator: " · "))
 
                 **Examples**:
                 - `{"op":"list","group":"ui"}`
@@ -66,7 +72,7 @@ final class AppSettingsMCPService: Service {
                 inputSchema: .object(
                     properties: [
                         "op": .string(description: "Operation.", enum: ["list", "get", "set", "options"]),
-                        "group": .string(description: "Settings group.", enum: ["ui", "prompt_packaging", "models", "context_builder", "mcp", "code_maps", "file_system", "agent_mode"]),
+                        "group": .string(description: "Settings group.", enum: groups.map { JSONValue.string($0) }),
                         "key": .string(description: "Allowlisted setting key (required for set/options)."),
                         "keys": .array(description: "Multiple keys (get only).", items: .string()),
                         "value": .anyOf([

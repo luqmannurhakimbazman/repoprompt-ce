@@ -50,6 +50,40 @@ final class JudgmentAppSettingsGroupTests: XCTestCase {
         XCTAssertEqual(keys, ["judgment.shadow_enabled", "judgment.shadow_log_file_path", "judgment.api_key"])
     }
 
+    /// The advertised tool schema carried its own hand-written copy of the group list, and
+    /// it had already drifted: the registry gained `judgment` in DEBUG and the schema did
+    /// not. Nothing in this app validates a call against the advertised enum, so the CLI
+    /// kept working and the drift stayed invisible — but a schema-validating client would
+    /// refuse `list group=judgment`, and an agent reading the tool description would never
+    /// learn the group exists.
+    ///
+    /// This asserts the property rather than the list: every group that actually holds a
+    /// setting must be advertised, whatever the build configuration.
+    func testTheAdvertisedSchemaNamesEveryGroupThatHoldsASetting() async throws {
+        let service = try service()
+        let listed = try await service.handleForTesting(["op": .string("list"), "detailed": .bool(false)])
+        let settings = try XCTUnwrap(listed.objectValue?["settings"]?.arrayValue)
+        let groupsInUse = Set(settings.compactMap { $0.objectValue?["group"]?.stringValue })
+        XCTAssertTrue(groupsInUse.contains("judgment"), "This test is pointless if the DEBUG group is absent.")
+
+        let tools = await service.tools
+        let tool = try XCTUnwrap(tools.first)
+        // Read the schema the way a client would: encoded, not through Swift accessors.
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(tool.inputSchema))
+        let properties = try XCTUnwrap((encoded as? [String: Any])?["properties"] as? [String: Any])
+        let groupSchema = try XCTUnwrap(properties["group"] as? [String: Any])
+        let advertised = try Set(XCTUnwrap(groupSchema["enum"] as? [String]))
+
+        XCTAssertTrue(
+            groupsInUse.isSubset(of: advertised),
+            "Groups that exist but are not advertised: \(groupsInUse.subtracting(advertised).sorted())"
+        )
+        XCTAssertTrue(
+            tool.description.contains("judgment"),
+            "The tool description's group list is what an agent reads; it must name the group too."
+        )
+    }
+
     // MARK: - The key is write-only
 
     /// The whole point of `judgment.api_key` is that it has a write path and no read path.

@@ -106,14 +106,25 @@ DEBUG-only and off by default. Nothing is sent unless someone stores a TypeSafe 
 under the `TypeSafeSystemOneAPI` secure-storage account **and** sets
 `judgment.shadow_enabled`. With no key, the app makes no request. The DEBUG-only
 `judgment.api_key` setting is the only writer of that account; reading it returns `set` or
-`not set` and never the key.
+`not set` and never the key, and writing either of those two labels is refused so neither
+can be stored as a credential.
+
+Local recording and network sending are separate, and only the second depends on the key:
+
+| State | Leaves the machine | Written to the local JSONL file |
+| --- | --- | --- |
+| `judgment.shadow_enabled` off | nothing | nothing |
+| on, no key stored | nothing | one row per question, marked `judgment_available: false` |
+| on, key stored | the payload below | one row per question, with the judgment |
+| Release build | nothing | nothing |
 
 What leaves this machine, per recorded `ask_user` question:
 
 - the question text and its optional per-question context,
 - the option labels and option descriptions, positionally aligned, with an empty string
   where an option has no description,
-- which option the agent marked as recommended.
+- the option the app treats as recommended: the one the agent flagged, or the first option
+  when it flagged none.
 
 Those five fields are the whole payload, and the set is fixed in code: `JudgmentState` sits
 behind a `fileprivate` initialiser in `JudgmentStateRedactor`'s file, so nothing outside
